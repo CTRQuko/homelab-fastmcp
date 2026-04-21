@@ -69,6 +69,36 @@ def _from_md_files(key: str) -> str | None:
     return found
 
 
+def _parse_env_value(raw: str) -> str:
+    """Parse a raw .env value, handling quotes and inline comments.
+
+    Rules:
+    - Leading/trailing whitespace is stripped.
+    - If the value starts with a quote (' or "), everything up to the matching
+      quote is preserved verbatim (including '#' characters).
+    - Unquoted values: '#' preceded by whitespace (space or tab) starts an
+      inline comment and is stripped.
+    - '#' without a leading space is treated as part of the value.
+    """
+    raw = raw.strip()
+    if not raw:
+        return ""
+
+    if raw[0] in ('"', "'"):
+        quote = raw[0]
+        end = raw.find(quote, 1)
+        if end > 0:
+            return raw[1:end]
+        return raw[1:]
+
+    for sep in (" #", "\t#"):
+        idx = raw.find(sep)
+        if idx >= 0:
+            raw = raw[:idx]
+            break
+    return raw.strip()
+
+
 def _from_dotenv(key: str) -> str | None:
     """Load from .env file in project root."""
     if not _PROJECT_ENV.exists():
@@ -77,7 +107,7 @@ def _from_dotenv(key: str) -> str | None:
         for line in _PROJECT_ENV.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line.startswith(f"{key}="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
+                return _parse_env_value(line.split("=", 1)[1])
     except OSError:
         pass
     return None

@@ -1,4 +1,5 @@
 """Detección automática de dispositivos en puertos serie."""
+import re
 import time
 
 import serial
@@ -82,11 +83,7 @@ def detectar_dispositivo_uart(
                 result["notas"].append("Detectado U-Boot. El dispositivo está en modo bootloader.")
                 return result
 
-            # Detectar prompt de shell: un carácter de prompt al FINAL de línea
-            # (posiblemente seguido de espacio). Esto evita falsos positivos
-            # con URLs, paths, anchors, etc. en el boot greeting.
-            import re as _re
-            if _re.search(r"[#$>](\s*)$", boot_greeting.rstrip("\r\n").splitlines()[-1] if boot_greeting.strip() else ""):
+            if re.search(r"[#$>](\s*)$", boot_greeting.rstrip("\r\n").splitlines()[-1] if boot_greeting.strip() else ""):
                 result["notas"].append("Parece haber un prompt de shell activo.")
 
         # Intentar comandos de identificación

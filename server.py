@@ -75,7 +75,11 @@ if _env_file.exists():
 # ---------------------------------------------------------------------------
 # Homelab directory (cross-platform)
 # ---------------------------------------------------------------------------
-HOMELAB_DIR = os.environ.get("HOMELAB_DIR", "C:/homelab")
+if sys.platform == "win32":
+    _default_homelab = "C:/homelab"
+else:
+    _default_homelab = "/home"  # Linux/macOS fallback
+HOMELAB_DIR = os.environ.get("HOMELAB_DIR", _default_homelab)
 
 # ---------------------------------------------------------------------------
 # Downstream env vars (injected into child processes)

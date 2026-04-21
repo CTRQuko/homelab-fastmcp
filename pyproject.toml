@@ -1,6 +1,6 @@
 [project]
 name = "homelab-fastmcp"
-version = "0.3.1"
+version = "0.3.2"
 description = "MCP Aggregator para homelab — reemplaza mcp-router Go con FastMCP"
 authors = [
   { name = "Jandro" }
