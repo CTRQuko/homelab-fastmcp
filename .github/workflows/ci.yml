@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    name: lint + tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      # En CI los downstreams no están disponibles — los integration tests
+      # pueden tolerarlo (los tests están diseñados para eso) o skiparse.
+      HOMELAB_DIR: ${{ github.workspace }}/homelab-stub
+      HOMELAB_LOG_LEVEL: DEBUG
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra dev
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Run pytest (unit + critical + coverage_gaps)
+        run: >
+          uv run pytest
+          tests/test_security.py
+          tests/test_security_extended.py
+          tests/test_critical.py
+          tests/test_coverage_gaps.py
+          tests/test_adaptive.py
+          -v --tb=short
+
+      # NOTA: tests/test_integration.py y test_resilience.py arrancan 7
+      # subprocesos downstream reales — requieren los MCPs en C:/homelab/mcp-servers/
+      # que no están en CI. Se ejecutan solo en local.

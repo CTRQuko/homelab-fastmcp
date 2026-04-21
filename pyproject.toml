@@ -1,0 +1,61 @@
+[project]
+name = "homelab-fastmcp"
+version = "0.3.0"
+description = "MCP Aggregator para homelab — reemplaza mcp-router Go con FastMCP"
+authors = [
+  { name = "Jandro" }
+]
+requires-python = ">=3.11"
+
+dependencies = [
+  "fastmcp>=3.0.0",
+  "requests>=2.31.0",
+  "pygithub>=2.3.0",
+  "paramiko>=4.0.0",
+  "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-timeout>=2.3",
+]
+dev = [
+  "ruff>=0.6",
+]
+
+[project.scripts]
+homelab-fastmcp = "server:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["server*", "native_tools*", "downstream*", "tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+# tests/manual/ contiene scripts que requieren hardware real (UART, GPON SSH)
+# ejecutar manualmente con: python tests/manual/test_hardware.py
+norecursedirs = ["manual", ".venv", "__pycache__", ".pytest_cache"]
+# Timeout global: ningún test debe bloquear más de 60s.
+# Tests de integración individuales pueden aumentarlo con @pytest.mark.timeout(N).
+addopts = "-v --strict-markers --strict-config --timeout=60"
+markers = [
+    "integration: marca tests que arrancan subprocesos reales (servers downstream)",
+    "hardware: marca tests que requieren hardware (UART, GPON)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
