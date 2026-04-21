@@ -125,6 +125,35 @@ y nunca usamos `print()` en el runtime.
 9. main() → mcp.run(transport="stdio")
 ```
 
+## Entry point y deployment
+
+`pyproject.toml` declara:
+```toml
+[project.scripts]
+homelab-fastmcp = "server:main"
+
+[tool.setuptools]
+py-modules = ["server"]
+```
+
+El `py-modules = ["server"]` es **necesario** porque `server.py` es un módulo
+single-file, no un paquete. Sin él, setuptools no empaqueta `server` y
+`uv run homelab-fastmcp` falla con `ModuleNotFoundError`.
+
+Los clientes MCP (OpenCode, Claude Desktop) invocan así:
+
+```
+uv run --directory <path-al-proyecto> homelab-fastmcp
+```
+
+`--directory` hace que uv use el venv + entry points del proyecto,
+independientemente del cwd desde donde se invoque el cliente MCP.
+
+El server queda escuchando stdio indefinidamente; el cliente MCP gestiona
+el ciclo de vida del subproceso (lanzarlo, enviar JSON-RPC, terminarlo).
+`main()` captura `KeyboardInterrupt` y cualquier excepción con logs
+estructurados a stderr.
+
 ## Tests
 
 - `test_integration.py` arranca el servidor como subprocess real vía `Client(SERVER_PATH)`

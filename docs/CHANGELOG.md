@@ -5,6 +5,26 @@ Todas las novedades relevantes de `homelab-fastmcp`.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/) y usa
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] — 2026-04-22
+
+### Fixed
+- **build**: `[project.scripts] homelab-fastmcp = "server:main"` fallaba con
+  `ModuleNotFoundError: No module named 'server'` al ejecutarse vía
+  `uv run homelab-fastmcp`. Causa: `[tool.setuptools.packages.find]
+  include=["server*"]` trataba `server` como glob de paquete, no como módulo
+  single-file. Fix: declarado explícitamente con
+  `[tool.setuptools] py-modules = ["server"]`.
+  Esto permite que los clientes MCP (OpenCode, Claude Desktop) invoquen el
+  aggregator con `uv run --directory <path> homelab-fastmcp`.
+- **ci**: `test_linux_always_available` y `test_windows_only_on_windows`
+  fallaban en CI porque requieren los downstream MCPs instalados
+  (`$HOMELAB_DIR/mcp-servers/homelab-mcp`). Marcados con
+  `@pytest.mark.integration`; CI los excluye con `-m "not integration"`.
+
+### Added
+- Ejemplos de configuración para OpenCode (`opencode.json`) y
+  Claude Desktop (`claude_desktop_config.json`) en la documentación.
+
 ## [0.3.0] — 2026-04-22
 
 ### Added

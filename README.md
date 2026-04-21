@@ -7,7 +7,7 @@ MCP Aggregator en Python con FastMCP 3.x. Monta downstream MCPs + tools nativas.
 - **Cross-platform**: Windows, Linux, macOS (via `HOMELAB_DIR`)
 - **Adaptativo**: Omite `windows`/`docker` en Linux/macOS automaticamente
 - **Seguro**: Input validation regex, sanitizacion de errores, secrets externalizados
-- **Testeado**: 90+ tests (seguridad, integracion, resiliencia, adaptacion, contratos)
+- **Testeado**: 95+ tests (seguridad, integracion, resiliencia, adaptacion, contratos)
 - **Logging**: arranque estructurado en stderr (stdout reservado al protocolo MCP)
 
 ## Estructura
@@ -21,7 +21,7 @@ native_tools/          # Tools nativas en Python
 
 server.py              # Aggregator FastMCP (adaptativo por plataforma)
 
-tests/                 # 90+ tests pytest
+tests/                 # 95+ tests pytest
   test_integration.py       # exposicion de tools
   test_security.py          # validacion inputs
   test_security_extended.py # sanitizacion + masking
@@ -39,16 +39,65 @@ tests/                 # 90+ tests pytest
 ```powershell
 # 1. Clonar en C:\homelab\laboratorio\homelab-fastmcp (o ajustar HOMELAB_DIR)
 # 2. Configurar secrets en C:\homelab\.config\secrets\*.md
-# 3. Ejecutar
-uv run --extra test pytest tests/ -v    # 90 passed, 1 skipped
+# 3. Instalar dependencias
+uv sync --extra test
+# 4. Verificar tests
+uv run --extra test pytest tests/ -v    # 95 passed, 2 skipped
+# 5. Arranque manual (opcional, para smoke test)
+uv run homelab-fastmcp                   # queda escuchando stdio
 ```
 
 ### Linux / macOS
 
 ```bash
 export HOMELAB_DIR=/home/tuusuario/homelab
+uv sync --extra test
 uv run --extra test pytest tests/ -v
+uv run homelab-fastmcp
 ```
+
+## Uso como MCP server
+
+`homelab-fastmcp` se registra como subproceso stdio en cualquier cliente MCP.
+Ejemplos:
+
+### OpenCode (`~/.config/opencode/opencode.json`)
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "homelab-fastmcp": {
+      "command": [
+        "uv", "run", "--directory",
+        "C:\\homelab\\laboratorio\\homelab-fastmcp",
+        "homelab-fastmcp"
+      ],
+      "enabled": true,
+      "type": "local"
+    }
+  }
+}
+```
+
+### Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.json`)
+
+```json
+{
+  "mcpServers": {
+    "homelab-fastmcp": {
+      "command": "uv",
+      "args": [
+        "run", "--directory",
+        "C:\\homelab\\laboratorio\\homelab-fastmcp",
+        "homelab-fastmcp"
+      ]
+    }
+  }
+}
+```
+
+En Linux/macOS sustituir la ruta por la del clonado (ej. `~/homelab/laboratorio/homelab-fastmcp`).
 
 ## Configuracion
 
@@ -86,7 +135,10 @@ uv run --extra test pytest tests/ -v
 
 ```bash
 # Toda la suite (excluye tests/manual/)
-uv run --extra test pytest tests/ -v              # 90 passed, 1 skipped
+uv run --extra test pytest tests/ -v              # 95 passed, 2 skipped
+
+# Solo unit + critical + coverage (sin integracion, como en CI)
+uv run --extra test pytest tests/ -m "not integration" -v
 
 # Por categoria
 uv run --extra test pytest tests/test_security*.py -v
@@ -99,11 +151,12 @@ python tests/manual/test_hardware.py
 
 ## Estado
 
-- **Version**: 0.3.0
+- **Version**: 0.3.1
 - **9/9** servicios funcionan (funcional)
-- **90/90** tests pasan (1 skipped Linux-only en Windows)
+- **95/95** tests pasan (2 skipped: Linux-only en Windows + servers.json ausente)
 - **0** secrets hardcodeados en codigo fuente
 - **Ruff**: clean (`uvx ruff check .`)
+- **CI**: GitHub Actions matrix (ubuntu + windows)
 
 ## Documentacion
 

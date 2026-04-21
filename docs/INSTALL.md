@@ -88,12 +88,53 @@ UNIFI_LOCAL_VERIFY_SSL=false
 ### 5. Verificar instalacion
 
 ```bash
-# Tests
-uv run pytest tests/ -v
+# Tests (suite completa)
+uv run --extra test pytest tests/ -v          # 95 passed, 2 skipped
 
-# Test funcional rapido
-uv run python simple_test.py
+# Arranque manual del server (smoke test)
+uv run homelab-fastmcp                         # Ctrl+C para salir
+
+# Test funcional rapido (9 tools contra MCP real)
+uv run python tests/manual/simple_test.py
 ```
+
+### 6. Uso como MCP server
+
+El entry point `homelab-fastmcp` (definido en `pyproject.toml`) arranca
+el aggregator en stdio. Los clientes MCP lo invocan así:
+
+**OpenCode** (`~/.config/opencode/opencode.json`):
+```json
+"mcp": {
+  "homelab-fastmcp": {
+    "command": [
+      "uv", "run", "--directory",
+      "C:\\homelab\\laboratorio\\homelab-fastmcp",
+      "homelab-fastmcp"
+    ],
+    "enabled": true,
+    "type": "local"
+  }
+}
+```
+
+**Claude Desktop** (`%APPDATA%\Claude\claude_desktop_config.json`):
+```json
+"mcpServers": {
+  "homelab-fastmcp": {
+    "command": "uv",
+    "args": [
+      "run", "--directory",
+      "C:\\homelab\\laboratorio\\homelab-fastmcp",
+      "homelab-fastmcp"
+    ]
+  }
+}
+```
+
+Los 3 downstreams se detectan por plataforma:
+- `windows_*` y `docker_*` solo en Windows
+- `linux_*`, `proxmox_*`, `unifi_*`, `uart_*`, `gpon_*` en todas
 
 ## Configuracion de Downstreams
 
