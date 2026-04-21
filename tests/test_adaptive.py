@@ -113,6 +113,7 @@ def test_secrets_path_uses_homelab_dir():
 # Tests de integración adaptativos (requieren Client)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_server_name_consistent():
     """El nombre del servidor debe ser Homelab Aggregator independientemente de la plataforma."""
@@ -123,9 +124,14 @@ async def test_server_name_consistent():
         assert result.serverInfo.name == "Homelab Aggregator"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_linux_always_available():
-    """Linux downstream debe estar disponible en todas las plataformas."""
+    """Linux downstream debe estar disponible en todas las plataformas.
+
+    Requiere que $HOMELAB_DIR/mcp-servers/homelab-mcp esté instalado.
+    En CI sin ese repo disponible, el test se skipea con -m 'not integration'.
+    """
     from fastmcp import Client
     server_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server.py")
     async with Client(server_path) as client:
@@ -135,10 +141,15 @@ async def test_linux_always_available():
         assert "linux_run_command" in names
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(sys.platform != "win32", reason="Solo en Windows")
 @pytest.mark.asyncio
 async def test_windows_only_on_windows():
-    """Windows tools solo deben existir en Windows."""
+    """Windows tools solo deben existir en Windows.
+
+    Requiere que $HOMELAB_DIR/mcp-servers/homelab-mcp esté instalado.
+    En CI sin ese repo disponible, el test se skipea con -m 'not integration'.
+    """
     from fastmcp import Client
     server_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server.py")
     async with Client(server_path) as client:

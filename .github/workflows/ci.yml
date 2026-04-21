@@ -48,8 +48,9 @@ jobs:
           tests/test_critical.py
           tests/test_coverage_gaps.py
           tests/test_adaptive.py
+          -m "not integration"
           -v --tb=short
 
-      # NOTA: tests/test_integration.py y test_resilience.py arrancan 7
-      # subprocesos downstream reales — requieren los MCPs en C:/homelab/mcp-servers/
-      # que no están en CI. Se ejecutan solo en local.
+      # NOTA: los tests marcados con @pytest.mark.integration (y todo
+      # tests/test_integration.py / test_resilience.py) requieren los
+      # downstream MCPs en C:/homelab/mcp-servers/ y se ejecutan solo en local.
