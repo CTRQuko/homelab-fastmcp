@@ -9,9 +9,11 @@ except ImportError:
 
 from .secrets import load as _load_secret
 
-# GitHub usernames/repos: debe empezar por alfanumérico + hyphens/underscores/dots
-# Rechaza `.hidden`, `-start` y cadena vacía (inválidos en GitHub).
-_GH_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+# GitHub usernames: max 39 chars (límite real de GitHub).
+# Debe empezar por alfanumérico; rechaza `.hidden`, `-start` y vacíos.
+_GH_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,38}$")
+# GitHub repo names: max 100 chars (límite real de GitHub).
+_GH_REPO_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$")
 # PR/issue state
 _GH_STATE_RE = re.compile(r"^(open|closed|all)$")
 
@@ -35,8 +37,15 @@ def _client():
 
 
 def _validate_name(name: str, field: str = "name") -> None:
+    """Valida owner/user (max 39 chars, límite GitHub)."""
     if not name or not _GH_NAME_RE.match(name):
         raise ValueError(f"{field} inválido")
+
+
+def _validate_repo(name: str) -> None:
+    """Valida repo name (max 100 chars, límite GitHub)."""
+    if not name or not _GH_REPO_RE.match(name):
+        raise ValueError("repo inválido")
 
 
 def _validate_state(state: str) -> None:
@@ -55,7 +64,7 @@ def list_repos(user: str) -> list[dict]:
 def get_repo_info(owner: str, repo: str) -> dict:
     """Información de un repositorio."""
     _validate_name(owner, "owner")
-    _validate_name(repo, "repo")
+    _validate_repo(repo)
     g = _client()
     r = g.get_repo(f"{owner}/{repo}")
     return {
@@ -72,7 +81,7 @@ def get_repo_info(owner: str, repo: str) -> dict:
 def get_issue(owner: str, repo: str, issue_number: int) -> dict:
     """Detalles de una issue."""
     _validate_name(owner, "owner")
-    _validate_name(repo, "repo")
+    _validate_repo(repo)
     if not isinstance(issue_number, int) or issue_number < 1:
         raise ValueError("issue_number debe ser un entero positivo")
     g = _client()
@@ -90,7 +99,7 @@ def get_issue(owner: str, repo: str, issue_number: int) -> dict:
 def create_issue(owner: str, repo: str, title: str, body: str = "") -> dict:
     """Crea una nueva issue."""
     _validate_name(owner, "owner")
-    _validate_name(repo, "repo")
+    _validate_repo(repo)
     if not title or not isinstance(title, str):
         raise ValueError("title es obligatorio y debe ser string")
     if not isinstance(body, str):
@@ -108,7 +117,7 @@ def create_issue(owner: str, repo: str, title: str, body: str = "") -> dict:
 def list_prs(owner: str, repo: str, state: str = "open") -> list[dict]:
     """Lista pull requests abiertos."""
     _validate_name(owner, "owner")
-    _validate_name(repo, "repo")
+    _validate_repo(repo)
     _validate_state(state)
     g = _client()
     r = g.get_repo(f"{owner}/{repo}")
