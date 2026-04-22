@@ -209,7 +209,10 @@ _proxmox_config = {
                 f"{HOMELAB_DIR}/mcp-servers/homelab-mcp",
                 "run",
                 "homelab-proxmox-mcp"
-            ]
+            ],
+            "env": {
+                "PROXMOX_NODES_FILE": f"{HOMELAB_DIR}/mcp-servers/homelab-mcp/proxmox_nodes.json"
+            },
         }
     }
 }

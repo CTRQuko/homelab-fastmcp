@@ -4,6 +4,7 @@
 *.pem
 *.p12
 secrets/
+proxmox_nodes.json
 
 # Session transcripts / conversation logs (pueden contener secrets)
 conversacion.md
