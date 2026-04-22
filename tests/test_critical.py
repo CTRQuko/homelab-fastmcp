@@ -130,23 +130,33 @@ def test_downstream_env_propagation_unifi_filters_empty(monkeypatch):
 
 
 def test_downstream_env_propagation_no_cross_contamination(monkeypatch):
-    """GPON_* no aparece en env de UniFi; UNIFI_* no aparece en env de GPON."""
+    """Ningún dominio filtra sus vars al env de otro dominio.
+
+    Contrato: cada downstream recibe os.environ base (PATH, APPDATA, ...) PLUS
+    sus propias vars de dominio, pero NUNCA las vars de otros dominios.
+    """
     monkeypatch.setenv("UNIFI_API_KEY", "unifi_k")
     monkeypatch.setenv("GPON_HOST", "192.168.100.10")
     monkeypatch.setenv("GPON_USER", "testuser")
+    monkeypatch.setenv("PROXMOX_TOKEN_VALUE", "proxmox_secret")
+    monkeypatch.setenv("TAILSCALE_API_KEY", "tskey-fake")
 
     server = _reimport_server()
     unifi_env = server._unifi_config["mcpServers"]["default"]["env"]
     gpon_env = server._gpon_config["mcpServers"]["default"]["env"]
 
-    assert all(k.startswith("UNIFI_") for k in unifi_env), (
-        f"env de UniFi tiene claves no-UNIFI: {[k for k in unifi_env if not k.startswith('UNIFI_')]}"
-    )
-    assert all(k.startswith("GPON_") for k in gpon_env), (
-        f"env de GPON tiene claves no-GPON: {[k for k in gpon_env if not k.startswith('GPON_')]}"
-    )
-    assert "UNIFI_API_KEY" not in gpon_env
-    assert "GPON_HOST" not in unifi_env
+    # UniFi env: tiene su propia key, NO tiene las de otros dominios
+    assert unifi_env.get("UNIFI_API_KEY") == "unifi_k"
+    for foreign_prefix in ("GPON_", "PROXMOX_", "TAILSCALE_", "GITHUB_"):
+        leaked = [k for k in unifi_env if k.startswith(foreign_prefix)]
+        assert not leaked, f"env de UniFi filtra vars {foreign_prefix}: {leaked}"
+
+    # GPON env: tiene sus propias keys, NO tiene las de otros dominios
+    assert gpon_env.get("GPON_HOST") == "192.168.100.10"
+    assert gpon_env.get("GPON_USER") == "testuser"
+    for foreign_prefix in ("UNIFI_", "PROXMOX_", "TAILSCALE_", "GITHUB_"):
+        leaked = [k for k in gpon_env if k.startswith(foreign_prefix)]
+        assert not leaked, f"env de GPON filtra vars {foreign_prefix}: {leaked}"
 
 
 # ---------------------------------------------------------------------------

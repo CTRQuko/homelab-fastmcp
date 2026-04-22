@@ -84,7 +84,7 @@ if _env_file.exists():
             _key, _val = _line.split("=", 1)
             _key = _key.strip()
             _val = _parse_env_value(_val)
-            if _key not in os.environ:
+            if not os.environ.get(_key):
                 os.environ[_key] = _val
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,7 @@ HOMELAB_DIR = os.environ.get("HOMELAB_DIR", _default_homelab)
 # ---------------------------------------------------------------------------
 # UniFi
 os.environ.setdefault("UNIFI_API_KEY", "")
+os.environ.setdefault("UNIFI_API_TYPE", "local")
 os.environ.setdefault("UNIFI_LOCAL_HOST", "192.168.1.12")
 os.environ.setdefault("UNIFI_LOCAL_PORT", "11443")
 os.environ.setdefault("UNIFI_LOCAL_VERIFY_SSL", "false")
@@ -113,6 +114,30 @@ os.environ.setdefault("GPON_PORT", "22")
 os.environ.setdefault("GPON_TIMEOUT", "10")
 
 _ON_WINDOWS = sys.platform == "win32"
+
+# ---------------------------------------------------------------------------
+# Subprocess env builder
+# ---------------------------------------------------------------------------
+# Prefixes that identify "domain" env vars. Each downstream only sees its own
+# domain's vars — not those of other domains. Non-domain vars (PATH, APPDATA,
+# USERPROFILE, HOME, …) ARE inherited so uv/uvx can find Python, caches and
+# user dirs when the aggregator is launched from a client that doesn't pass
+# a full environment to the MCP subprocess.
+_DOMAIN_PREFIXES = ("UNIFI_", "GPON_", "PROXMOX_", "TAILSCALE_", "GITHUB_")
+
+
+def _build_subprocess_env(own_prefix: str) -> dict:
+    """Build env dict for a downstream subprocess.
+
+    - Inherits all os.environ entries with non-empty values.
+    - Excludes vars from OTHER domain prefixes (no cross-contamination).
+    - The downstream's own prefix is kept (that's the point).
+    """
+    other_prefixes = tuple(p for p in _DOMAIN_PREFIXES if p != own_prefix)
+    return {
+        k: v for k, v in os.environ.items()
+        if v and not k.startswith(other_prefixes)
+    }
 
 _instructions = """
 Agrega herramientas de infraestructura homelab.
@@ -236,23 +261,28 @@ if _ON_WINDOWS:
     mcp.mount(create_proxy(_docker_config), namespace="docker")
     log.info("Downstream montado: docker")
 
+_unifi_env = _build_subprocess_env("UNIFI_")
 _unifi_config = {
     "mcpServers": {
         "default": {
             "command": "uvx",
             "args": ["unifi-mcp-server"],
-            "env": {
-                k: v for k, v in os.environ.items()
-                if k.startswith("UNIFI_") and v  # no propagar valores vacíos
-            },
+            # Full os.environ base (minus other domains) + UNIFI_* overrides.
+            # create_proxy may replace the subprocess env wholesale; without PATH,
+            # APPDATA, USERPROFILE, uvx cannot locate its cache on Windows.
+            "env": _unifi_env,
         }
     }
 }
 mcp.mount(create_proxy(_unifi_config), namespace="unifi")
-_unifi_env_keys = [k for k in _unifi_config["mcpServers"]["default"]["env"]]
-log.info("Downstream montado: unifi (env keys: %s)", sorted(_unifi_env_keys))
-if not _unifi_env_keys:
+_unifi_domain_keys = sorted(k for k in _unifi_env if k.startswith("UNIFI_"))
+log.info("Downstream montado: unifi (UNIFI_* propagados: %s)", _unifi_domain_keys)
+if not _unifi_domain_keys:
     log.warning("unifi: ninguna variable UNIFI_* con valor — downstream puede fallar")
+if log.isEnabledFor(logging.DEBUG):
+    from native_tools.secrets import mask as _mask  # lazy import
+    for _k in _unifi_domain_keys:
+        log.debug("unifi env %s=%s", _k, _mask(_unifi_env[_k]))
 
 _uart_config = {
     "mcpServers": {
@@ -270,6 +300,7 @@ _uart_config = {
 mcp.mount(create_proxy(_uart_config), namespace="uart")
 log.info("Downstream montado: uart")
 
+_gpon_env = _build_subprocess_env("GPON_")
 _gpon_config = {
     "mcpServers": {
         "default": {
@@ -280,16 +311,18 @@ _gpon_config = {
                 "run",
                 "gpon-mcp"
             ],
-            "env": {
-                k: v for k, v in os.environ.items()
-                if k.startswith("GPON_") and v  # no propagar valores vacíos
-            },
+            # Same pattern as unifi: full base env minus other domains + GPON_*.
+            "env": _gpon_env,
         }
     }
 }
 mcp.mount(create_proxy(_gpon_config), namespace="gpon")
-_gpon_env_keys = [k for k in _gpon_config["mcpServers"]["default"]["env"]]
-log.info("Downstream montado: gpon (env keys: %s)", sorted(_gpon_env_keys))
+_gpon_domain_keys = sorted(k for k in _gpon_env if k.startswith("GPON_"))
+log.info("Downstream montado: gpon (GPON_* propagados: %s)", _gpon_domain_keys)
+if log.isEnabledFor(logging.DEBUG):
+    from native_tools.secrets import mask as _mask  # lazy import
+    for _k in _gpon_domain_keys:
+        log.debug("gpon env %s=%s", _k, _mask(_gpon_env[_k]))
 
 # ---------------------------------------------------------------------------
 # Native tools (UART device detection)
