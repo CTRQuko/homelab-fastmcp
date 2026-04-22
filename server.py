@@ -6,6 +6,7 @@ Monta downstream MCPs con namespacing automático.
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -20,6 +21,20 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 log = logging.getLogger("homelab-fastmcp")
+
+# ---------------------------------------------------------------------------
+# Failure log file (append mode)
+# ---------------------------------------------------------------------------
+_FAILURE_LOG = Path(__file__).resolve().parent / "failure.log"
+
+
+def log_failure(namespace: str, tool: str, error: str) -> None:
+    """Append failure to failure.log."""
+    try:
+        with open(_FAILURE_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} | {namespace}.{tool} | {error}\n")
+    except Exception:
+        pass  # Never fail due to logging failures
 
 # ---------------------------------------------------------------------------
 # .env parsing helpers

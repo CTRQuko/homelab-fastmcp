@@ -185,6 +185,21 @@ UNIFI_LOCAL_HOST=<ip-del-controller>
 UNIFI_LOCAL_VERIFY_SSL=false
 ```
 
+### Proxmox no configurado
+
+El downstream de Proxmox espera un archivo `proxmox_nodes.json` en el directorio del proyecto:
+```json
+[
+  {"alias": "pve", "host": "pve.tudominio.local", "user": "tu-usuario@pam", "token_id": "tu-token-name", "token_secret": "xxxx-xxxx-xxxx-xxxx"}
+]
+```
+
+O configura mediante variables de entorno (menos seguro).
+
+### "Docker no disponible"
+
+Requiere Docker Desktop instalado y ejecutándose en Windows.
+
 ### "PyGithub no esta instalado"
 
 ```bash
