@@ -107,6 +107,7 @@ En Linux/macOS sustituir la ruta por la del clonado (ej. `~/homelab/laboratorio/
 |----------|---------|-------------|
 | `HOMELAB_DIR` | `C:/homelab` (Win) | Directorio raiz del homelab |
 | `HOMELAB_LOG_LEVEL` | `INFO` | Nivel de logging (DEBUG/INFO/WARNING/ERROR) |
+| `HOMELAB_DOTENV_WINS` | `0` | `1` para que el `.env` del proyecto pise env vars externas |
 | `UNIFI_API_KEY` | — | API key de UniFi |
 | `UNIFI_API_TYPE` | `local` | `local`, `cloud-ea`, `cloud-v1` |
 | `TAILSCALE_API_KEY` | — | API key de Tailscale |
@@ -118,6 +119,25 @@ En Linux/macOS sustituir la ruta por la del clonado (ej. `~/homelab/laboratorio/
 1. Variable de entorno
 2. `$HOMELAB_DIR/.config/secrets/*.md`
 3. `.env` en raiz del proyecto
+
+> **Credenciales stale en el entorno del sistema**
+>
+> Si una env var externa (p. ej. Windows User Environment, launcher, shell)
+> exporta un valor viejo/revocado de una credencial, tiene prioridad sobre
+> el `.env` local. El aggregator emite un `WARNING [homelab-fastmcp] external
+> env differs from .env for: [KEYS]` en stderr al arrancar si detecta esta
+> disparidad en credenciales críticas (UNIFI_*, GPON_*, PROXMOX_*, TAILSCALE_*,
+> GITHUB_*).
+>
+> Opciones:
+> - **Limpiar la env var externa** (recomendado). En Windows:
+>   `[Environment]::SetEnvironmentVariable('UNIFI_API_KEY', $null, 'User')`
+> - **Forzar `.env` como source of truth** exportando `HOMELAB_DOTENV_WINS=1`
+>   antes de lanzar el cliente MCP.
+>
+> **Nota sobre reinicios:** el protocolo MCP stdio congela el `os.environ`
+> del subprocess al lanzar. Tras cambiar credenciales, reiniciar el cliente
+> MCP (Claude Desktop, OpenCode, …) para que las nuevas sean vistas.
 
 ## Downstreams
 

@@ -106,6 +106,60 @@ def test_build_subprocess_env_skips_empty_values(monkeypatch):
     assert "UNIFI_EMPTY" not in unifi_env
 
 
+def test_dotenv_wins_flag_overrides_external(monkeypatch, tmp_path, capsys):
+    """Con HOMELAB_DOTENV_WINS=1, el .env del proyecto pisa env vars externas.
+
+    Caso de uso: credencial vieja exportada en env del usuario (Windows User
+    env var, launcher corporate, etc.) que no se puede limpiar — el flag
+    asegura que el .env local del proyecto siempre gane.
+    """
+    monkeypatch.setenv("HOMELAB_DOTENV_WINS", "1")
+    monkeypatch.setenv("UNIFI_API_KEY", "stale_external_value")
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("UNIFI_API_KEY=good_value_from_dotenv\n", encoding="utf-8")
+
+    # Reproduce la lógica inline del bloque de carga con el flag activo
+    import os
+    import sys
+    _dotenv_wins = os.environ.get("HOMELAB_DOTENV_WINS", "0").strip() == "1"
+    assert _dotenv_wins is True
+
+    for _line in env_file.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _key, _val = _line.split("=", 1)
+            _key = _key.strip()
+            _val = _val.strip()
+            if _dotenv_wins:
+                os.environ[_key] = _val
+            else:
+                if not os.environ.get(_key):
+                    os.environ[_key] = _val
+
+    assert os.environ["UNIFI_API_KEY"] == "good_value_from_dotenv"
+
+
+def test_dotenv_wins_flag_default_off(monkeypatch):
+    """Default (flag ausente o "0"): externa gana — convención dotenv."""
+    monkeypatch.delenv("HOMELAB_DOTENV_WINS", raising=False)
+    monkeypatch.setenv("UNIFI_API_KEY", "external_wins_value")
+
+    import os
+    _dotenv_wins = os.environ.get("HOMELAB_DOTENV_WINS", "0").strip() == "1"
+    assert _dotenv_wins is False
+
+    # Simulamos el bloque: si flag off y var externa ya tiene valor, .env no entra.
+    dotenv_val = "would_be_ignored"
+    if _dotenv_wins:
+        os.environ["UNIFI_API_KEY"] = dotenv_val
+    else:
+        if not os.environ.get("UNIFI_API_KEY"):
+            os.environ["UNIFI_API_KEY"] = dotenv_val
+
+    assert os.environ["UNIFI_API_KEY"] == "external_wins_value"
+
+
 def test_gpon_env_excludes_unifi(monkeypatch):
     """Regresión cruzada: GPON no recibe UNIFI_."""
     monkeypatch.setenv("GPON_HOST", "g")

@@ -76,18 +76,51 @@ def _parse_env_value(raw: str) -> str:
 # ---------------------------------------------------------------------------
 # Load .env if present (development convenience)
 # ---------------------------------------------------------------------------
+# HOMELAB_DOTENV_WINS=1 (env var EXTERNA) hace que .env del proyecto pise
+# siempre a las env vars externas. Útil cuando el parent process exporta
+# credenciales viejas/stale que no se pueden limpiar (env var user Windows,
+# launcher corporate, etc.). Default: convención dotenv estándar (externa gana).
+_dotenv_wins = os.environ.get("HOMELAB_DOTENV_WINS", "0").strip() == "1"
+
 _env_file = Path(__file__).resolve().parent / ".env"
 if _env_file.exists():
+    _overrides_logged = []
     for _line in _env_file.read_text(encoding="utf-8").splitlines():
         _line = _line.strip()
         if _line and not _line.startswith("#") and "=" in _line:
             _key, _val = _line.split("=", 1)
             _key = _key.strip()
             _val = _parse_env_value(_val)
-            # Respeta convención dotenv: env var externa gana si tiene valor.
-            # Si la externa está vacía ("") o ausente, el .env la rellena.
-            if not os.environ.get(_key):
+            _prev = os.environ.get(_key)
+            if _dotenv_wins:
+                # .env siempre gana
+                if _prev and _prev != _val:
+                    _overrides_logged.append(_key)
                 os.environ[_key] = _val
+            else:
+                # Estándar dotenv: externa gana si tiene valor
+                if not _prev:
+                    os.environ[_key] = _val
+                elif _prev != _val and _key.startswith(
+                    ("UNIFI_", "GPON_", "PROXMOX_", "TAILSCALE_", "GITHUB_")
+                ):
+                    # Warning early: env externa difiere del .env en una credencial.
+                    # Posible env stale (ver commit 75a35d0 para el caso UniFi).
+                    _overrides_logged.append(_key)
+    if _overrides_logged and not _dotenv_wins:
+        print(
+            f"WARNING [homelab-fastmcp] external env differs from .env for: "
+            f"{sorted(_overrides_logged)}. External wins (dotenv convention). "
+            f"Set HOMELAB_DOTENV_WINS=1 to force .env. "
+            f"Restart client MCP if credentials seem stale.",
+            file=sys.stderr,
+        )
+    elif _overrides_logged and _dotenv_wins:
+        print(
+            f"INFO [homelab-fastmcp] .env overrode external env for: "
+            f"{sorted(_overrides_logged)} (HOMELAB_DOTENV_WINS=1)",
+            file=sys.stderr,
+        )
 
 # ---------------------------------------------------------------------------
 # Homelab directory (cross-platform)
