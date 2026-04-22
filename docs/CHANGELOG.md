@@ -5,6 +5,21 @@ Todas las novedades relevantes de `homelab-fastmcp`.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/) y usa
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] — 2026-04-22
+
+### Fixed
+- **secrets**: `_from_dotenv()` ahora usa `_parse_env_value()` — paridad con
+  `server._parse_env_value()` (fix R2/R5). Antes: parser primitivo que no
+  manejaba comillas anidadas ni `#` dentro de valores entre comillas.
+- **server**: `HOMELAB_DIR` ahora tiene fallback `/home` en Linux/macOS
+  (fix R8). Antes: hardcoded `C:/homelab` — fallaba silenciosamente
+  en otras plataformas.
+- **uart_detect**: `import re` movido a nivel módulo (fix R10). Antes:
+  inline `import re as _re` dentro de función — antipatrón de linter.
+
+### Added
+- `docs/BUGS.md` — tabla de bugs con códigos R#, estado y fix aplicado.
+
 ## [0.3.1] — 2026-04-22
 
 ### Fixed
