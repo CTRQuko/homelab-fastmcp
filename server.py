@@ -84,6 +84,8 @@ if _env_file.exists():
             _key, _val = _line.split("=", 1)
             _key = _key.strip()
             _val = _parse_env_value(_val)
+            # Respeta convención dotenv: env var externa gana si tiene valor.
+            # Si la externa está vacía ("") o ausente, el .env la rellena.
             if not os.environ.get(_key):
                 os.environ[_key] = _val
 
@@ -279,6 +281,7 @@ _unifi_domain_keys = sorted(k for k in _unifi_env if k.startswith("UNIFI_"))
 log.info("Downstream montado: unifi (UNIFI_* propagados: %s)", _unifi_domain_keys)
 if not _unifi_domain_keys:
     log.warning("unifi: ninguna variable UNIFI_* con valor — downstream puede fallar")
+
 if log.isEnabledFor(logging.DEBUG):
     from native_tools.secrets import mask as _mask  # lazy import
     for _k in _unifi_domain_keys:

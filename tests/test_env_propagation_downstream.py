@@ -23,19 +23,14 @@ def _reimport_server():
 
 def test_dotenv_overrides_empty_env_var(monkeypatch, tmp_path):
     """Si el cliente MCP exporta UNIFI_API_KEY='' explícito, el .env debe poder
-    sobrescribirla. Antes del fix, `if _key not in os.environ` no disparaba."""
-    # Simula cliente MCP que pasa UNIFI_API_KEY vacía al subprocess
+    rellenarla. Antes del fix, `if _key not in os.environ` no disparaba porque
+    la key SÍ está en os.environ (con valor vacío)."""
     monkeypatch.setenv("UNIFI_API_KEY", "")
 
-    # Creamos un .env temporal y monkeypatch server.__file__ para apuntar ahí
-    import importlib
-    env_dir = tmp_path
-    env_file = env_dir / ".env"
+    env_file = tmp_path / ".env"
     env_file.write_text("UNIFI_API_KEY=value_from_dotenv\n", encoding="utf-8")
 
-    # Apuntar a un server.py copiado en tmp_path sería complejo. En su lugar,
-    # probamos la lógica inline: reproducir el bloque de carga tal como en
-    # server.py, y verificar que 'not os.environ.get(_key)' SÍ sobrescribe.
+    # Reproduce la lógica inline del bloque de carga con el fix:
     import os
     for _line in env_file.read_text(encoding="utf-8").splitlines():
         _line = _line.strip()
@@ -43,7 +38,7 @@ def test_dotenv_overrides_empty_env_var(monkeypatch, tmp_path):
             _key, _val = _line.split("=", 1)
             _key = _key.strip()
             _val = _val.strip()
-            if not os.environ.get(_key):  # el fix
+            if not os.environ.get(_key):  # fix: vacío cuenta como ausente
                 os.environ[_key] = _val
 
     assert os.environ["UNIFI_API_KEY"] == "value_from_dotenv"
