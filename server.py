@@ -83,9 +83,21 @@ def _parse_env_value(raw: str) -> str:
 _dotenv_wins = os.environ.get("HOMELAB_DOTENV_WINS", "0").strip() == "1"
 
 _env_file = Path(__file__).resolve().parent / ".env"
+_env_lines: list[str] = []
 if _env_file.exists():
+    try:
+        _env_lines = _env_file.read_text(encoding="utf-8").splitlines()
+    except (UnicodeDecodeError, OSError) as _e:
+        # .env ilegible (bytes no-UTF-8, permisos, etc.) NO debe tumbar el
+        # aggregator. Log y continuar con env vars externas solamente.
+        log.warning(
+            ".env no se pudo leer (%s): %s. Continuando con env vars externas.",
+            type(_e).__name__, _e,
+        )
+
+if _env_lines:
     _overrides_logged = []
-    for _line in _env_file.read_text(encoding="utf-8").splitlines():
+    for _line in _env_lines:
         _line = _line.strip()
         if _line and not _line.startswith("#") and "=" in _line:
             _key, _val = _line.split("=", 1)

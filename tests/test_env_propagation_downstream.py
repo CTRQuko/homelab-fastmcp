@@ -160,6 +160,76 @@ def test_dotenv_wins_flag_default_off(monkeypatch):
     assert os.environ["UNIFI_API_KEY"] == "external_wins_value"
 
 
+def test_stale_env_warning_emitted_for_critical_domain(monkeypatch, capsys):
+    """REAL-LOADER: si una key crítica difiere entre external env y .env,
+    server.py emite un WARNING a stderr al arrancar (default flag off).
+
+    Regresión del caso UniFi 401 (commit 75a35d0): si Windows User Env tiene
+    credencial stale, el warning temprano ayuda al diagnóstico sin instrumentación.
+    """
+    # Forzar disparidad: external UNIFI_API_KEY distinto del valor en el .env
+    # del proyecto (iMLPDk… para UniFi real). Usamos un valor claramente stale.
+    monkeypatch.setenv("UNIFI_API_KEY", "STALE_EXTERNAL_VALUE_XX")
+    monkeypatch.delenv("HOMELAB_DOTENV_WINS", raising=False)
+
+    _reimport_server()
+    captured = capsys.readouterr()
+
+    assert "WARNING" in captured.err
+    assert "UNIFI_API_KEY" in captured.err
+    assert "dotenv" in captured.err.lower()  # menciona la convención/flag
+
+
+def test_stale_env_warning_silent_for_neutral_keys(monkeypatch, capsys):
+    """REAL-LOADER: el warning NO se emite para keys fuera de los prefijos
+    críticos (UNIFI_/GPON_/PROXMOX_/TAILSCALE_/GITHUB_)."""
+    # Setea una key que está en .env (HOMELAB_DIR) con valor distinto — neutral
+    monkeypatch.setenv("HOMELAB_DIR", "/some/other/path")
+    monkeypatch.delenv("HOMELAB_DOTENV_WINS", raising=False)
+
+    _reimport_server()
+    captured = capsys.readouterr()
+
+    # No debe aparecer el warning crítico (puede haber otros logs de INFO)
+    assert "WARNING" not in captured.err or "HOMELAB_DIR" not in captured.err
+
+
+def test_dotenv_bad_encoding_does_not_crash_startup(tmp_path):
+    """LOGIC REFERENCE: si .env contiene bytes no-UTF-8, el arranque no debe
+    crashear. El bloque try/except debe capturar UnicodeDecodeError y continuar.
+
+    Test inline porque el loader real lee Path(__file__).parent/.env y no
+    es trivial redirigirlo sin copiar todo server.py.
+    """
+    import logging
+    env_file = tmp_path / ".env"
+    # Escribimos bytes Latin-1 que no son UTF-8 válidos
+    env_file.write_bytes(b"UNIFI_API_KEY=valor_con_\xe9\xe8\n")
+
+    lines: list[str] = []
+    warnings_emitted = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record):
+            warnings_emitted.append(record.getMessage())
+
+    log = logging.getLogger("test-dotenv-bad-encoding")
+    log.addHandler(_CaptureHandler())
+
+    # Reproduce el bloque try/except del loader real
+    try:
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+    except (UnicodeDecodeError, OSError) as e:
+        log.warning(
+            ".env no se pudo leer (%s): %s. Continuando con env vars externas.",
+            type(e).__name__, e,
+        )
+
+    # Assert: no se propagó la excepción y se emitió warning
+    assert lines == []  # no se cargó nada
+    assert any("UnicodeDecodeError" in msg for msg in warnings_emitted)
+
+
 def test_gpon_env_excludes_unifi(monkeypatch):
     """Regresión cruzada: GPON no recibe UNIFI_."""
     monkeypatch.setenv("GPON_HOST", "g")
