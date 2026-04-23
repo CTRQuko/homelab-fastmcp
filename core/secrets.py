@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -152,3 +153,77 @@ def mask(value: str, visible: int = 4) -> str:
     if len(value) <= visible * 2:
         return "*" * len(value)
     return value[:visible] + "****"
+
+
+# ---------------------------------------------------------------------------
+# Enumeration helpers (for subprocess plugin env scoping)
+# ---------------------------------------------------------------------------
+# A "credential-looking" key is an uppercase alnum+underscore identifier of
+# at least 3 chars. Same shape the write path enforces in
+# ``router_add_credential``. Kept strict on purpose: `PATH`, `HOME`,
+# `APPDATA` etc. do not match (too short / no underscore), so generic
+# system env vars are never classified as credentials.
+_CRED_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+
+
+def _is_credential_key(key: str) -> bool:
+    return bool(_CRED_KEY_RE.fullmatch(key)) and "_" in key
+
+
+def list_candidate_refs() -> list[str]:
+    """Return every credential-shaped key known to any resolution source.
+
+    Scans ``os.environ`` + ``secrets/*.md`` + ``.env``. The caller pairs
+    this list against a plugin's ``credential_refs`` patterns to decide
+    which keys to forward to the plugin's subprocess. Values are never
+    read here — the router calls :func:`_resolve` separately for the
+    matching subset.
+    """
+    keys: set[str] = {k for k in os.environ if _is_credential_key(k)}
+
+    for directory in _SECRET_DIRS:
+        if not directory.exists():
+            continue
+        for file in directory.glob("*.md"):
+            try:
+                for raw in file.read_text(encoding="utf-8").splitlines():
+                    if "=" not in raw:
+                        continue
+                    key = raw.split("=", 1)[0]
+                    if _is_credential_key(key):
+                        keys.add(key)
+            except OSError:
+                continue
+
+    if _PROJECT_ENV.exists():
+        try:
+            for raw in _PROJECT_ENV.read_text(encoding="utf-8").splitlines():
+                stripped = raw.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key = stripped.split("=", 1)[0].strip()
+                if _is_credential_key(key):
+                    keys.add(key)
+        except OSError:
+            pass
+
+    return sorted(keys)
+
+
+def resolve_refs_matching(patterns: list[str]) -> dict[str, str]:
+    """Return a ``{key: value}`` dict for every candidate ref that matches
+    at least one of the fnmatch-style ``patterns``.
+
+    Missing values drop out silently — the router uses this to build a
+    subprocess env dict, and an unresolved ref is not worth crashing
+    startup over. The hard dependency channel is ``[requires]``, not this.
+    """
+    if not patterns:
+        return {}
+    out: dict[str, str] = {}
+    for key in list_candidate_refs():
+        if any(fnmatch.fnmatchcase(key, pat) for pat in patterns):
+            value = _resolve(key)
+            if value:
+                out[key] = value
+    return out

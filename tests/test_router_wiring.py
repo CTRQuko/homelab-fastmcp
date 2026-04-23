@@ -1013,6 +1013,167 @@ def test_build_mcp_attaches_middleware_when_policy_present(tmp_path, monkeypatch
     assert len(mcp.mounts) == 1 and mcp.mounts[0][1] == "guarded"
 
 
+# ---------------------------------------------------------------------------
+# Fase 6d — subprocess env scoping (foreign-credential filter)
+# ---------------------------------------------------------------------------
+
+
+def _mk_creds_plugin(
+    cfg: router_mod.RouterConfig, name: str, credential_refs: list[str]
+) -> None:
+    patterns = ", ".join(f'"{p}"' for p in credential_refs)
+    _mk_plugin(
+        cfg.plugin_dir,
+        name,
+        f"""
+        [plugin]
+        name = "{name}"
+        version = "1.0.0"
+
+        [runtime]
+        entry = "server.py"
+
+        [security]
+        credential_refs = [{patterns}]
+        """,
+    )
+    (cfg.plugin_dir / name / "server.py").write_text(
+        "# placeholder\n", encoding="utf-8"
+    )
+
+
+def test_plugin_env_inherits_ordinary_system_vars(tmp_path, monkeypatch):
+    """PATH / APPDATA / HOME-style vars must not be filtered — the child
+    Python would fail to start without them."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_creds_plugin(cfg, "p1", credential_refs=["P1_*"])
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "p1")
+
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("APPDATA", "C:/Users/x/AppData")
+
+    env = router_mod._plugin_subprocess_env(ps.manifest, [])
+
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["APPDATA"] == "C:/Users/x/AppData"
+
+
+def test_plugin_env_forwards_own_credentials(tmp_path, monkeypatch):
+    """A credential matching the plugin's own pattern must reach the
+    subprocess — otherwise nothing works."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_creds_plugin(cfg, "proxplug", credential_refs=["PROXMOX_*"])
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "proxplug")
+
+    monkeypatch.setenv("PROXMOX_HOST", "192.0.2.1")
+    monkeypatch.setenv("PROXMOX_TOKEN", "tok-ABC")
+
+    all_patterns = router_mod._collect_all_credential_patterns(state)
+    env = router_mod._plugin_subprocess_env(ps.manifest, all_patterns)
+
+    assert env["PROXMOX_HOST"] == "192.0.2.1"
+    assert env["PROXMOX_TOKEN"] == "tok-ABC"
+
+
+def test_plugin_env_blocks_foreign_credentials(tmp_path, monkeypatch):
+    """If plugin B claims ``PROXMOX_*`` and plugin A does not, A's
+    subprocess must not see PROXMOX_* env — Layer 3 scoping across
+    sibling subprocess plugins."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_creds_plugin(cfg, "alpha", credential_refs=["ALPHA_*"])
+    _mk_creds_plugin(cfg, "beta", credential_refs=["PROXMOX_*"])
+    state = router_mod.RouterState.bootstrap(cfg)
+
+    monkeypatch.setenv("PROXMOX_TOKEN", "secret")
+    monkeypatch.setenv("ALPHA_TOKEN", "mine")
+
+    alpha = next(p for p in state.report.plugins if p.manifest.name == "alpha")
+    all_patterns = router_mod._collect_all_credential_patterns(state)
+    env = router_mod._plugin_subprocess_env(alpha.manifest, all_patterns)
+
+    assert "PROXMOX_TOKEN" not in env  # claimed by beta, not by alpha
+    assert env["ALPHA_TOKEN"] == "mine"
+
+
+def test_plugin_env_unclaimed_credential_passes_through(tmp_path, monkeypatch):
+    """A credential-shaped var that NO plugin claims is harmless — keep
+    the legacy behaviour of inheriting it. Only *foreign* claims block."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_creds_plugin(cfg, "only", credential_refs=["ONLY_*"])
+    state = router_mod.RouterState.bootstrap(cfg)
+
+    monkeypatch.setenv("HOMELAB_DIR", "C:/homelab")  # looks credential-y, nobody claims
+
+    ps = next(p for p in state.report.plugins if p.manifest.name == "only")
+    all_patterns = router_mod._collect_all_credential_patterns(state)
+    env = router_mod._plugin_subprocess_env(ps.manifest, all_patterns)
+
+    assert env["HOMELAB_DIR"] == "C:/homelab"
+
+
+def test_plugin_env_merges_vault_file_refs(tmp_path, monkeypatch):
+    """A credential that lives only in secrets/*.md (not os.environ) must
+    still reach the subprocess when the plugin declares a matching
+    pattern — otherwise users storing secrets in the vault would find
+    their plugins silently un-credentialed."""
+    homelab_dir = tmp_path / "homelab"
+    secrets_dir = homelab_dir / ".config" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "vault.md").write_text(
+        "VAULTED_TOKEN=from-vault\n", encoding="utf-8"
+    )
+
+    # Point core.secrets at our fake homelab dir for this test.
+    import core.secrets as _sec
+    monkeypatch.setattr(_sec, "_SECRET_DIRS", [secrets_dir])
+    monkeypatch.delenv("VAULTED_TOKEN", raising=False)
+
+    cfg = _tmp_cfg(tmp_path)
+    _mk_creds_plugin(cfg, "vaultplug", credential_refs=["VAULTED_*"])
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "vaultplug")
+
+    env = router_mod._plugin_subprocess_env(
+        ps.manifest, router_mod._collect_all_credential_patterns(state)
+    )
+
+    assert env["VAULTED_TOKEN"] == "from-vault"
+
+
+def test_plugin_mount_config_payload_includes_env(tmp_path):
+    """The proxy config must carry an ``env`` dict now — without it
+    FastMCP's create_proxy spawns with an empty env (Windows) or only
+    inherits the launch shell's env, and most plugins break on import."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_creds_plugin(cfg, "p1", credential_refs=["FOO_*"])
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "p1")
+
+    payload = router_mod._plugin_mount_config(ps)
+
+    server = payload["mcpServers"]["default"]
+    assert "env" in server
+    assert isinstance(server["env"], dict)
+
+
+def test_collect_all_credential_patterns_dedups(tmp_path):
+    """If two plugins declare the same pattern, the union lists it once.
+    Otherwise a tiny 'other - own' difference computation later would
+    drop it from own scope incorrectly."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_creds_plugin(cfg, "a", credential_refs=["SHARED_*", "A_ONLY"])
+    _mk_creds_plugin(cfg, "b", credential_refs=["SHARED_*", "B_ONLY"])
+    state = router_mod.RouterState.bootstrap(cfg)
+
+    patterns = router_mod._collect_all_credential_patterns(state)
+
+    assert patterns.count("SHARED_*") == 1
+    assert "A_ONLY" in patterns
+    assert "B_ONLY" in patterns
+
+
 def test_build_mcp_no_middleware_when_all_plugins_open(tmp_path, monkeypatch):
     """If no plugin declares a policy, the middleware is not attached —
     the common case pays zero cost."""

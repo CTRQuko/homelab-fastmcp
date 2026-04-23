@@ -37,6 +37,17 @@ _proxmox_config = {
 - [ ] Testear que el downstream recibe las variables
 - [ ] Considerar cargar vars dinámicamente desde el .env de homelab-fastmcp en lugar de hardcodear
 
+### Resuelto en el nuevo `router.py` (Fase 6d)
+
+La segunda pendiente ya no aplica al router modular: cuando un plugin se
+monta via `create_proxy`, el router construye el dict `env` automáticamente
+a partir del manifest `[security].credential_refs` y del vault (`core.secrets`).
+No hace falta hardcodear. Ver `router._plugin_subprocess_env` + sección
+"Scoping for subprocess plugins" en `docs/security-model.md`.
+
+`server.legacy.py` mantiene la solución vieja porque los clientes siguen
+apuntando a él hasta Fase 8 (cutover).
+
 ## UniFi - 401 Unauthorized
 
 ### Síntoma

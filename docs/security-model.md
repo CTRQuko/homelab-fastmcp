@@ -58,6 +58,26 @@ Writes go through `router_add_credential`, which:
 Plugins marked `disabled` or `error` do **not** contribute patterns to the
 allowlist, so a disabled manifest cannot widen credential scope.
 
+### Scoping for subprocess plugins
+
+Plugins mounted via `create_proxy` (Fase 6b) run as child processes, so
+the in-process `get_credential` check does not reach them — they read env
+directly. The router therefore *builds* each subprocess's env explicitly
+(`router._plugin_subprocess_env`):
+
+- Ordinary system vars (`PATH`, `APPDATA`, `HOME`, `PYTHON*`, `HOMELAB_DIR`,
+  etc.) pass through so the child interpreter can start.
+- Credential-shaped vars (uppercase + underscore, length ≥ 3) only
+  propagate when they match **this plugin's** `credential_refs` patterns,
+  **or** are not claimed by any other loaded plugin. A var claimed by
+  plugin B but not by plugin A is stripped from A's subprocess env.
+- Refs stored only in `secrets/*.md` or `.env` (not in `os.environ`) are
+  resolved via `core.secrets.resolve_refs_matching` and merged in, so the
+  subprocess sees the same view the vault API would return.
+
+Net effect: sibling subprocess plugins cannot see each other's tokens
+even though they share the same router process.
+
 ## Layer 4 — Profile gate
 
 `profiles/<name>.yaml` is an explicit allowlist of plugin names that may

@@ -20,6 +20,11 @@ Fase 6b (mount), Fase 6c (tools filter middleware).
   con skip de `node_modules` / `.git` / `.venv` y depth cap.
 - `[tools].whitelist/blacklist` enforceado por middleware FastMCP
   (on_list_tools + on_call_tool) — Fase 6c, commit `75c3c72`.
+- **Env propagation a plugin subprocess** con scoping Layer 3 entre
+  plugins hermanos. `_plugin_subprocess_env` respeta
+  `credential_refs` y bloquea credenciales ajenas — Fase 6d. Resuelve
+  el gap que obligaba a `server.legacy.py` a hardcodear env por plugin
+  (ver `docs/MCP-DOWNSTREAM-ISSUES.md`).
 - `core/loader.tool_allowed` helper + `QuarantineEntry` para
   plugin.toml malformado.
 - `SqliteMemory` resuelve paths contra `router.ROOT`.
@@ -70,7 +75,7 @@ Fase 6b (mount), Fase 6c (tools filter middleware).
 
 ## Estado de cobertura
 
-- 238 passed + 2 skipped (baseline de este rediseño era 112).
+- 249 passed + 2 skipped (baseline de este rediseño era 112).
 - `router.py --dry-run` arranca limpio con 0 plugins, 0 hosts.
 - Security review pasado con 4 fixes (newline injection, disabled-plugin
   widening, tomllib guard, `.md` col-0 strict parse) + Layer 5 tier 1

@@ -22,12 +22,14 @@ from typing import Any
 
 import logging
 
-from core import audit
+from core import audit, secrets
 from core.inventory import Inventory, InventoryError
 from core.loader import LoadReport, reconcile, tool_allowed
 from core.memory import MemoryBackend, load_backend
 from core.profile import load_enabled_plugins
 from core.skills import Skill, discover_agents, discover_skills
+
+import fnmatch as _fnmatch
 
 _log = logging.getLogger(__name__)
 
@@ -358,7 +360,9 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
             # Mount the plugin as a downstream MCP server. Failures are
             # isolated so one broken plugin cannot hide healthy siblings
             # from the client — the error surfaces via status downgrade.
-            _mount_plugin(mcp, plugin_state)
+            # Passing ``state`` so foreign credentials of sibling plugins
+            # can be scoped out of this plugin's subprocess env.
+            _mount_plugin(mcp, plugin_state, state)
 
     # Skills and agents as read-only tools.
     for skill in state.skills:
@@ -381,7 +385,58 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
     return mcp
 
 
-def _plugin_mount_config(plugin_state) -> dict:  # type: ignore[no-untyped-def]
+def _plugin_subprocess_env(
+    manifest, all_credential_patterns: list[str] | None = None
+) -> dict[str, str]:
+    """Build the env dict forwarded to a plugin subprocess.
+
+    Two classes of variable are handled differently:
+
+    - **System/runtime vars** (``PATH``, ``APPDATA``, ``HOME``, ``TEMP``,
+      ``PYTHON*`` …): passed through unchanged. Without them the child
+      Python interpreter cannot find caches, user dirs or site-packages.
+    - **Credential-shaped vars** (``^[A-Z][A-Z0-9_]{2,}$`` containing at
+      least one underscore): only forwarded if they match this plugin's
+      ``[security].credential_refs`` patterns **or** are not claimed by
+      any other plugin. This preserves Layer 3 scoping across sibling
+      subprocess plugins — plugin A cannot see plugin B's tokens.
+
+    Credentials that only live in ``secrets/*.md`` or ``.env`` (not in
+    ``os.environ``) are resolved via :mod:`core.secrets` and merged in
+    so subprocess plugins see the same view as in-process consumers of
+    :func:`core.secrets.get_credential`.
+    """
+    own_patterns = list(manifest.security.get("credential_refs", []) or [])
+    all_patterns = all_credential_patterns or own_patterns
+    foreign_patterns = [p for p in all_patterns if p not in own_patterns]
+
+    def _matches_own(key: str) -> bool:
+        return any(_fnmatch.fnmatchcase(key, p) for p in own_patterns)
+
+    def _matches_foreign(key: str) -> bool:
+        return any(_fnmatch.fnmatchcase(key, p) for p in foreign_patterns)
+
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if not value:
+            continue
+        if secrets._is_credential_key(key):
+            # Credential-shaped. Keep only if ours, or not claimed by anyone.
+            if _matches_own(key) or not _matches_foreign(key):
+                env[key] = value
+        else:
+            # Ordinary system/runtime var — always inherit.
+            env[key] = value
+
+    # Pull in credentials stored only in secrets/*.md or .env so the
+    # subprocess sees the same view the in-process vault would.
+    for key, value in secrets.resolve_refs_matching(own_patterns).items():
+        env.setdefault(key, value)
+
+    return env
+
+
+def _plugin_mount_config(plugin_state, all_credential_patterns=None) -> dict:  # type: ignore[no-untyped-def]
     """Build the ``create_proxy`` config dict for one plugin.
 
     Kept pure so tests can assert on the exact command/args without
@@ -389,6 +444,12 @@ def _plugin_mount_config(plugin_state) -> dict:  # type: ignore[no-untyped-def]
     router's own Python interpreter and invoke ``[runtime].entry`` as a
     script. Venv management, ``deps`` install and ``python`` version
     matching are deferred — documented in docs/framework-deferrals.md.
+
+    ``all_credential_patterns`` is the union of ``credential_refs``
+    declared by every loaded plugin, used to scope foreign credentials
+    out of this plugin's subprocess env. When ``None`` only the plugin's
+    own patterns are considered — good enough for unit tests and for
+    the "single plugin loaded" case.
     """
     manifest = plugin_state.manifest
     runtime = manifest.runtime or {}
@@ -407,12 +468,29 @@ def _plugin_mount_config(plugin_state) -> dict:  # type: ignore[no-untyped-def]
             "default": {
                 "command": sys.executable,
                 "args": [str(entry_path)],
+                "env": _plugin_subprocess_env(manifest, all_credential_patterns),
             }
         }
     }
 
 
-def _mount_plugin(mcp, plugin_state) -> None:  # type: ignore[no-untyped-def]
+def _collect_all_credential_patterns(state: "RouterState") -> list[str]:
+    """Union of ``credential_refs`` across every plugin the router knows.
+
+    Quarantined entries don't contribute — their manifest never parsed, so
+    they cannot declare credentials. Disabled / pending / error plugins do
+    contribute: even if they're not serving right now, they've already
+    claimed a pattern and we want to honour that scope for their siblings.
+    """
+    patterns: list[str] = []
+    for ps in state.report.plugins:
+        for pat in ps.manifest.security.get("credential_refs", []) or []:
+            if pat not in patterns:
+                patterns.append(pat)
+    return patterns
+
+
+def _mount_plugin(mcp, plugin_state, state=None) -> None:  # type: ignore[no-untyped-def]
     """Mount one plugin as a downstream MCP server under its own namespace.
 
     On any failure (missing entry, proxy creation, mount registration)
@@ -422,7 +500,10 @@ def _mount_plugin(mcp, plugin_state) -> None:  # type: ignore[no-untyped-def]
     """
     name = plugin_state.manifest.name
     try:
-        config = _plugin_mount_config(plugin_state)
+        all_patterns = (
+            _collect_all_credential_patterns(state) if state is not None else None
+        )
+        config = _plugin_mount_config(plugin_state, all_patterns)
         from fastmcp.server import create_proxy  # lazy import
 
         mcp.mount(create_proxy(config), namespace=name)
