@@ -409,7 +409,28 @@ def _register_setup_tool(mcp, state: "RouterState", plugin_name: str) -> None:  
     tool_name = f"setup_{plugin_name}"
 
     def _setup() -> dict:
-        return _setup_payload(state, plugin_name)
+        start = time.monotonic()
+        try:
+            result = _setup_payload(state, plugin_name)
+            if state.cfg.audit_enabled:
+                audit.log_tool_call(
+                    plugin=plugin_name,
+                    tool=tool_name,
+                    args={},
+                    duration_ms=(time.monotonic() - start) * 1000,
+                    status="ok",
+                )
+            return result
+        except Exception as exc:
+            if state.cfg.audit_enabled:
+                audit.log_tool_call(
+                    plugin=plugin_name,
+                    tool=tool_name,
+                    args={},
+                    duration_ms=(time.monotonic() - start) * 1000,
+                    status=f"error:{type(exc).__name__}",
+                )
+            raise
 
     _setup.__name__ = tool_name
     _setup.__doc__ = (

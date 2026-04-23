@@ -23,6 +23,13 @@ SHA-256 hash of the arguments (never the raw values), duration, and
 status. Writes are fire-and-forget so an audit failure cannot block a tool
 call, and rotation is daily by date.
 
+Every tool the router exposes is wrapped: the `router_*` meta-tools, each
+`setup_<plugin>()`, and the `skill_*`/`agent_*` discovery tools. Error
+paths record `status = "error:<ExceptionType>"` so failed calls show up
+in the log instead of disappearing silently. When a plugin mount lands
+(see Layer 5), it inherits the same contract — its tools must route
+through the audit-wrapped registration helper.
+
 **Secrets are never logged.** `router_add_credential` deliberately omits
 the `value` field from the audit dict; only `ref` is hashed. Any plugin
 author copying this pattern must do the same.
@@ -69,15 +76,19 @@ fastest way to reduce the exposed tool surface without editing plugins.
 
 ## Layer 5 (planned) — Runtime interceptors
 
-Declared in `[security]` but **not yet enforced**:
+Declared in `[security]` but **not yet enforced**. Enforcement is split in
+two because the two surfaces have very different cost profiles:
 
-- `network_dynamic`, `filesystem_read`, `filesystem_write`, `exec` —
-  intercepted at subprocess/socket/pathlib boundaries.
-- `[tools].whitelist/blacklist` — applied at mount time.
-
-The helpers (`tool_allowed` in `core.loader`) are in place. Enforcement
-lands together with actual plugin mounting (subprocess/import of plugin
-entry points), which is scheduled for a later phase.
+- **`[tools].whitelist/blacklist`** — applied at plugin mount time. The
+  helper (`core.loader.tool_allowed`) is already implemented and unit-
+  tested; it is wired the moment plugin mounting lands. No process
+  boundary required.
+- **`network_dynamic`, `filesystem_read`, `filesystem_write`, `exec`** —
+  require interception at subprocess/socket/pathlib boundaries. Done in-
+  process these are advisory at best (any plugin can monkeypatch them
+  back); done correctly they need the plugin to run in a child process
+  the router controls. Scheduled together with the plugin runtime
+  sandbox, not before.
 
 ## Threat model summary
 

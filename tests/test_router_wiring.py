@@ -6,6 +6,7 @@ is skipped.
 """
 from __future__ import annotations
 
+import dataclasses
 import textwrap
 from pathlib import Path
 
@@ -499,3 +500,118 @@ def test_build_mcp_registers_tools(tmp_path):
     # the public contract: it has a .name. We only need to assert it built.
     assert mcp is not None
     assert getattr(mcp, "name", "") == "homelab-fastmcp-router"
+
+
+# ---------------------------------------------------------------------------
+# Fase 5 — audit coverage for setup_<plugin>() (gap closure)
+# ---------------------------------------------------------------------------
+
+
+class _FakeMCP:
+    """Minimal stand-in for FastMCP that records registered tool callables.
+
+    FastMCP's public surface is not stable enough to invoke a registered
+    tool inline. The setup_ tool is a plain Python closure; capturing it
+    via the decorator is enough to exercise its audit behavior.
+    """
+
+    def __init__(self) -> None:
+        self.tools: dict[str, object] = {}
+
+    def tool(self, *, name: str):  # type: ignore[no-untyped-def]
+        def deco(fn):  # type: ignore[no-untyped-def]
+            self.tools[name] = fn
+            return fn
+
+        return deco
+
+
+def _prepare_pending_state(
+    tmp_path: Path, audit_enabled: bool
+) -> router_mod.RouterState:
+    cfg = _tmp_cfg(tmp_path)
+    cfg = dataclasses.replace(cfg, audit_enabled=audit_enabled)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "needs",
+        """
+        [plugin]
+        name = "needs"
+        version = "1.0.0"
+
+        [security]
+
+        [[requires.hosts]]
+        type = "proxmox"
+        min = 1
+        prompt = "need proxmox"
+        """,
+    )
+    return router_mod.RouterState.bootstrap(cfg)
+
+
+def test_setup_tool_audits_on_success(tmp_path, monkeypatch):
+    """setup_<plugin> used to be the only tool bypassing audit. With audit
+    enabled, every invocation must produce one entry tagged as the plugin
+    it belongs to — not as 'router'."""
+    state = _prepare_pending_state(tmp_path, audit_enabled=True)
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        router_mod.audit, "log_tool_call", lambda **kw: captured.append(kw)
+    )
+
+    mcp = _FakeMCP()
+    router_mod._register_setup_tool(mcp, state, "needs")
+    fn = mcp.tools["setup_needs"]
+    payload = fn()  # type: ignore[operator]
+
+    assert payload["status"] == "pending_setup"
+    assert len(captured) == 1
+    entry = captured[0]
+    assert entry["plugin"] == "needs"
+    assert entry["tool"] == "setup_needs"
+    assert entry["status"] == "ok"
+    assert entry["duration_ms"] >= 0
+
+
+def test_setup_tool_audits_on_error(tmp_path, monkeypatch):
+    """If the payload helper blows up mid-call, audit still records one
+    entry with ``error:<ExcType>`` — surface gaps must be observable."""
+    state = _prepare_pending_state(tmp_path, audit_enabled=True)
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        router_mod.audit, "log_tool_call", lambda **kw: captured.append(kw)
+    )
+
+    def _boom(_state, _name):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(router_mod, "_setup_payload", _boom)
+
+    mcp = _FakeMCP()
+    router_mod._register_setup_tool(mcp, state, "needs")
+    fn = mcp.tools["setup_needs"]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        fn()  # type: ignore[operator]
+
+    assert len(captured) == 1
+    assert captured[0]["status"] == "error:RuntimeError"
+    assert captured[0]["plugin"] == "needs"
+
+
+def test_setup_tool_skips_audit_when_disabled(tmp_path, monkeypatch):
+    """``audit_enabled=False`` is the escape hatch for tests/dev; setup_
+    must honour it just like every other wrapped tool."""
+    state = _prepare_pending_state(tmp_path, audit_enabled=False)
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        router_mod.audit, "log_tool_call", lambda **kw: captured.append(kw)
+    )
+
+    mcp = _FakeMCP()
+    router_mod._register_setup_tool(mcp, state, "needs")
+    fn = mcp.tools["setup_needs"]
+    fn()  # type: ignore[operator]
+
+    assert captured == []
