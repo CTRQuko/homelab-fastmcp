@@ -93,3 +93,38 @@ def test_sqlite_absolute_path_unchanged(tmp_path):
     b = SqliteMemory(path=abs_path)
     b.save("x")
     assert abs_path.exists()
+
+
+def test_find_framework_root_locates_by_markers(tmp_path, monkeypatch):
+    """``_find_framework_root`` sube buscando router.py + pyproject.toml
+    como marcadores. Reemplaza el ``parent.parent.parent`` fragil que
+    rompia si movian ``core/`` de sitio (R6)."""
+    from core.memory import sqlite as sqlite_mod
+
+    fake_root = tmp_path / "fw"
+    deep = fake_root / "core" / "memory"
+    deep.mkdir(parents=True)
+    (fake_root / "router.py").write_text("# marker", encoding="utf-8")
+    (fake_root / "pyproject.toml").write_text("[tool]\n", encoding="utf-8")
+    fake_module_file = deep / "sqlite.py"
+    fake_module_file.write_text("# marker", encoding="utf-8")
+
+    monkeypatch.setattr(sqlite_mod, "__file__", str(fake_module_file))
+    assert sqlite_mod._find_framework_root() == fake_root
+
+
+def test_find_framework_root_raises_when_markers_missing(tmp_path, monkeypatch):
+    from core.memory import sqlite as sqlite_mod
+
+    orphan = tmp_path / "no-root" / "deep" / "sqlite.py"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text("# marker", encoding="utf-8")
+
+    monkeypatch.setattr(sqlite_mod, "__file__", str(orphan))
+    # Nested inside tmp_path which has no router.py/pyproject.toml markers
+    # and neither does any ancestor within reach (Windows/POSIX-safe: the
+    # walk stops at the filesystem root, which also lacks those markers).
+    import pytest
+
+    with pytest.raises(RuntimeError, match="could not locate framework root"):
+        sqlite_mod._find_framework_root()

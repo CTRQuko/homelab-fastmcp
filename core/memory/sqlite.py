@@ -17,7 +17,23 @@ from typing import Any
 
 from core.memory import MemoryBackend
 
-_FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent.parent
+
+def _find_framework_root() -> Path:
+    """Walk up from this file until we hit the framework marker set.
+
+    Counting ``parent.parent.parent`` was brittle: any future layout change
+    (moving ``core/`` under ``src/`` for example) would silently point the
+    SQLite DB outside the repo. Looking for ``router.py`` + ``pyproject.toml``
+    ties the root to real artefacts rather than a path-length constant.
+    """
+    here = Path(__file__).resolve()
+    for parent in (here, *here.parents):
+        if (parent / "router.py").is_file() and (parent / "pyproject.toml").is_file():
+            return parent
+    raise RuntimeError("could not locate framework root from " + str(here))
+
+
+_FRAMEWORK_ROOT = _find_framework_root()
 
 
 class SqliteMemory(MemoryBackend):

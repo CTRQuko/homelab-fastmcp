@@ -165,3 +165,33 @@ def test_skill_name_unnamed_fallback(tmp_path):
     )
     skills = discover_skills(tmp_path)
     assert skills[0].name == "unnamed"
+
+
+def test_skill_name_collision_logs_warning(tmp_path, caplog):
+    """Dos skills con el mismo nombre: last-wins sigue aplicando pero ahora
+    el operador ve un warning para detectar overrides no intencionados (R5)."""
+    _write(
+        tmp_path / "a" / "one.md",
+        """\
+        ---
+        name: shared
+        description: first
+        ---
+        first body
+        """,
+    )
+    _write(
+        tmp_path / "b" / "one.md",
+        """\
+        ---
+        name: shared
+        description: second
+        ---
+        second body
+        """,
+    )
+    with caplog.at_level("WARNING", logger="core.skills"):
+        skills = discover_skills(tmp_path)
+    assert len(skills) == 1
+    assert "collision" in caplog.text.lower()
+    assert "shared" in caplog.text

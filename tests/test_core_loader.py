@@ -412,3 +412,62 @@ def test_reconcile_detects_added_and_removed(tmp_path):
     second = reconcile(plugins, inv, state_path)
     assert second.added == ["second"]
     assert second.unchanged == ["first"]
+
+
+def test_requires_hosts_min_non_integer_raises_manifest_error(tmp_path):
+    """Un ``min`` no coercible a int cuarentena al plugin con mensaje
+    explicito, en vez de crashear con ValueError generico (R8)."""
+    path = _mk_plugin(
+        tmp_path,
+        "badmin",
+        """
+        [plugin]
+        name = "badmin"
+        version = "1.0.0"
+
+        [security]
+
+        [[requires.hosts]]
+        type = "linux"
+        min = "dos"
+        prompt = ""
+        """,
+    )
+    with pytest.raises(ManifestError, match="'min' must be an integer"):
+        parse_manifest(path)
+
+
+def test_requires_hosts_min_invalid_is_quarantined_by_discover(tmp_path):
+    plugins = tmp_path / "plugins"
+    _mk_plugin(
+        plugins,
+        "good",
+        """
+        [plugin]
+        name = "good"
+        version = "0.1.0"
+
+        [security]
+        """,
+    )
+    _mk_plugin(
+        plugins,
+        "badmin",
+        """
+        [plugin]
+        name = "badmin"
+        version = "0.1.0"
+
+        [security]
+
+        [[requires.hosts]]
+        type = "x"
+        min = "nope"
+        prompt = ""
+        """,
+    )
+    manifests, quarantined = discover_manifests(plugins)
+    assert [m.name for m in manifests] == ["good"]
+    assert len(quarantined) == 1
+    assert quarantined[0].path.name == "badmin"
+    assert "integer" in quarantined[0].error

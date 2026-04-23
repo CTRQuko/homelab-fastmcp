@@ -15,11 +15,14 @@ can tell them apart.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+_log = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 _NAME_SANITIZE_RE = re.compile(r"[^a-z0-9_]")
@@ -80,8 +83,19 @@ def _scan_dir(directory: Path, kind: str) -> list[Skill]:
             )
         )
     # Deduplicate by name (last wins — users can override bundled skills).
+    # A silent collision used to hide skills; now we log a warning so the
+    # operator can spot unintended overrides at startup.
     seen: dict[str, Skill] = {}
     for skill in out:
+        existing = seen.get(skill.name)
+        if existing is not None and existing.path != skill.path:
+            _log.warning(
+                "%s name collision on '%s': kept %s, dropped %s",
+                kind,
+                skill.name,
+                skill.path,
+                existing.path,
+            )
         seen[skill.name] = skill
     return list(seen.values())
 

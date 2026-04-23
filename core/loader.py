@@ -157,9 +157,16 @@ def parse_manifest(path: Path, strict: bool = True) -> PluginManifest:
     for item in requires_raw.get("hosts", []) or []:
         if not isinstance(item, dict) or "type" not in item:
             raise ManifestError(f"{path}: [requires.hosts] entries need a 'type'")
+        raw_min = item.get("min", 1)
+        try:
+            min_val = int(raw_min)
+        except (TypeError, ValueError) as exc:
+            raise ManifestError(
+                f"{path}: [requires.hosts] 'min' must be an integer, got {raw_min!r}"
+            ) from exc
         detail: dict[str, Any] = {
             "type": item["type"],
-            "min": int(item.get("min", 1)),
+            "min": min_val,
         }
         if "tag" in item:
             detail["tag"] = str(item["tag"])
