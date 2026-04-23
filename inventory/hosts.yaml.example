@@ -1,0 +1,20 @@
+# Neutral template. Copy to hosts.yaml and fill with your infrastructure.
+# IPs shown are RFC 5737 placeholders — replace with real addresses.
+hosts:
+  - name: example-linux-1
+    type: linux
+    address: 192.0.2.10
+    port: 22
+    auth:
+      method: ssh_key
+      credential_ref: SSH_KEY_EXAMPLE_LINUX_1
+    tags: [example]
+
+  - name: example-hypervisor-1
+    type: proxmox
+    address: 192.0.2.20
+    port: 8006
+    auth:
+      method: api_token
+      credential_ref: PROXMOX_EXAMPLE_HYPER_1_TOKEN
+    tags: [example, virtualization]

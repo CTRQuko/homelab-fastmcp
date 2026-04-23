@@ -1,0 +1,37 @@
+# Reference plugin manifest. The loader ignores directories starting with '_'
+# so this one is never mounted; copy it to plugins/<yourname>/ as a starting
+# point when authoring a real plugin.
+
+[plugin]
+name = "example"
+version = "0.1.0"
+enabled = false
+
+[runtime]
+entry = "server.py"
+python = ">=3.11"
+deps = []
+venv = "auto"
+
+[security]
+# Types of inventory the plugin is allowed to read.
+inventory_access = ["hosts:type=linux"]
+# Credential references the plugin may request from the vault.
+credential_refs = ["EXAMPLE_*"]
+# Dynamic network allowed? (true if the plugin opens connections to inventory hosts)
+network_dynamic = false
+filesystem_read = []
+filesystem_write = []
+exec = []
+
+[requires]
+hosts = [
+  { type = "linux", min = 1, prompt = "Add at least one Linux host with SSH credentials." }
+]
+credentials = [
+  { pattern = "EXAMPLE_TOKEN", prompt = "Token used by the example plugin." }
+]
+
+[tools]
+whitelist = []
+blacklist = []

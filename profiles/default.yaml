@@ -1,0 +1,2 @@
+# Default profile — only core tools. Plugins must be listed here to load.
+enabled_plugins: []

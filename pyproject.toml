@@ -13,6 +13,7 @@ dependencies = [
   "pygithub>=2.3.0",
   "paramiko>=4.0.0",
   "pyserial>=3.5",
+  "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +41,7 @@ py-modules = ["server"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["native_tools*"]
+include = ["native_tools*", "core*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

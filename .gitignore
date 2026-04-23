@@ -61,3 +61,12 @@ htmlcov/
 
 # Logs
 *.log
+
+# Modular framework runtime artefacts (user-specific)
+inventory/*.yaml
+!inventory/*.yaml.example
+config/.last_state.json
+config/audit.log*
+config/memory.db
+plugins/*/
+!plugins/_example/

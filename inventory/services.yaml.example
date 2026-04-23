@@ -1,0 +1,10 @@
+# Neutral template. Copy to services.yaml and fill with your services.
+# host_ref must match a 'name' in hosts.yaml.
+services:
+  - name: example-controller
+    type: generic
+    host_ref: example-linux-1
+    port: 8443
+    auth:
+      method: jwt
+      credential_ref: EXAMPLE_CONTROLLER_TOKEN

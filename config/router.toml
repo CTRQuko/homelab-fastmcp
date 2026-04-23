@@ -1,0 +1,22 @@
+# Router configuration for homelab-fastmcp framework.
+# Every field has a safe default; uncomment only what you need to override.
+
+[router]
+profile = "default"
+plugin_dir = "./plugins"
+inventory_dir = "./inventory"
+
+[memory]
+# Available backends: noop, sqlite
+backend = "noop"
+
+[memory.sqlite]
+path = "config/memory.db"
+
+[security]
+strict_manifest = true
+audit_enabled = true
+
+[startup]
+fail_fast = false
+report_diff = true
