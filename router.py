@@ -24,7 +24,7 @@ import logging
 
 from core import audit
 from core.inventory import Inventory, InventoryError
-from core.loader import LoadReport, reconcile
+from core.loader import LoadReport, reconcile, tool_allowed
 from core.memory import MemoryBackend, load_backend
 from core.profile import load_enabled_plugins
 from core.skills import Skill, discover_agents, discover_skills
@@ -366,6 +366,18 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
     for agent in state.agents:
         _register_agent_tool(mcp, agent, state)
 
+    # Plugin [tools].whitelist/blacklist enforcement — installed as a
+    # single middleware that consults a per-namespace policy dict. Only
+    # attached if at least one mounted plugin actually declares a policy,
+    # so the hot path stays empty for the common case.
+    policy = _build_tool_policy(state)
+    if policy:
+        try:
+            mcp.add_middleware(_make_tool_filter_middleware(policy))
+            _log.info("tool policy middleware active for %d plugin(s)", len(policy))
+        except Exception as exc:  # pragma: no cover — defensive
+            _log.warning("failed to attach tool policy middleware: %s", exc)
+
     return mcp
 
 
@@ -419,6 +431,67 @@ def _mount_plugin(mcp, plugin_state) -> None:  # type: ignore[no-untyped-def]
         plugin_state.status = "error"
         plugin_state.error = f"{type(exc).__name__}: {exc}"
         _log.warning("plugin '%s' mount failed: %s", name, plugin_state.error)
+
+
+def _build_tool_policy(state: "RouterState") -> dict[str, dict[str, Any]]:
+    """Collect ``[tools]`` policy dicts from every plugin mounted OK.
+
+    Plugins without any whitelist/blacklist drop out so the hot path in
+    the middleware is proportional to plugins that actually filter.
+    Quarantined/disabled/error plugins are not included — they don't
+    expose tools in the first place.
+    """
+    policy: dict[str, dict[str, Any]] = {}
+    for ps in state.report.plugins:
+        if ps.status != "ok":
+            continue
+        tools_cfg = ps.manifest.tools or {}
+        if tools_cfg.get("whitelist") or tools_cfg.get("blacklist"):
+            policy[ps.manifest.name] = tools_cfg
+    return policy
+
+
+def _make_tool_filter_middleware(policy: dict[str, dict[str, Any]]):  # type: ignore[no-untyped-def]
+    """Build a FastMCP middleware that enforces ``[tools]`` policy.
+
+    Imported lazily so the router has no import-time dep on fastmcp when
+    running ``--dry-run`` or from tests that stub the MCP layer. The
+    middleware applies two checks:
+
+    - ``on_list_tools``: the proxy forwards the full list from each
+      mounted subserver; we drop denied names before the client sees
+      them, so the LLM is never tempted to call a forbidden tool.
+    - ``on_call_tool``: defence in depth — a client that calls a name
+      anyway (cached list, malicious client, etc.) gets a clean
+      ``ValueError`` instead of the denied tool running.
+
+    Tools outside any known namespace (``router_*``, ``skill_*``, core)
+    are always allowed — the policy is strictly about plugin-exposed
+    tools.
+    """
+    from fastmcp.server.middleware import Middleware  # lazy import
+
+    def _allowed(full_name: str) -> bool:
+        for namespace, tools_cfg in policy.items():
+            prefix = f"{namespace}_"
+            if full_name.startswith(prefix):
+                return tool_allowed(tools_cfg, full_name[len(prefix):])
+        return True
+
+    class _ToolPolicyMiddleware(Middleware):
+        async def on_list_tools(self, context, call_next):  # type: ignore[no-untyped-def]
+            tools = await call_next(context)
+            return [t for t in tools if _allowed(t.name)]
+
+        async def on_call_tool(self, context, call_next):  # type: ignore[no-untyped-def]
+            name = getattr(context.message, "name", None)
+            if name is not None and not _allowed(name):
+                raise ValueError(
+                    f"Tool '{name}' denied by plugin [tools] policy"
+                )
+            return await call_next(context)
+
+    return _ToolPolicyMiddleware()
 
 
 def _setup_payload(state: "RouterState", plugin_name: str) -> dict:

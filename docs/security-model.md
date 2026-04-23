@@ -74,21 +74,32 @@ The gate is a second allowlist on top of the manifest — even if a plugin's
 requirements are met, the profile can refuse it. Flipping profiles is the
 fastest way to reduce the exposed tool surface without editing plugins.
 
-## Layer 5 (planned) — Runtime interceptors
+## Layer 5 — Runtime interceptors
 
-Declared in `[security]` but **not yet enforced**. Enforcement is split in
-two because the two surfaces have very different cost profiles:
+Enforcement is split in two because the two surfaces have very different
+cost profiles:
 
-- **`[tools].whitelist/blacklist`** — applied at plugin mount time. The
-  helper (`core.loader.tool_allowed`) is already implemented and unit-
-  tested; it is wired the moment plugin mounting lands. No process
-  boundary required.
+- **`[tools].whitelist/blacklist`** — **enforced.** A single FastMCP
+  middleware (`router._make_tool_filter_middleware`) consults a
+  per-namespace policy dict built at `build_mcp` time. It runs on two
+  hooks:
+  - `on_list_tools`: denied tools are stripped from the response so the
+    LLM never sees them. Reduces token surface and attack surface.
+  - `on_call_tool`: a client that calls a denied name anyway (stale
+    list cache, malicious client) gets a clean `ValueError` instead of
+    the tool running. Defence in depth.
+
+  Patterns in the manifest are matched against the **local** tool name
+  (namespace prefix stripped), so `blacklist = ["destroy_vm"]` blocks
+  `<plugin>_destroy_vm`. Tools outside any mounted plugin's namespace
+  (`router_*`, `skill_*`, core meta-tools) always pass — the filter is
+  scoped strictly to plugin-declared tools.
 - **`network_dynamic`, `filesystem_read`, `filesystem_write`, `exec`** —
-  require interception at subprocess/socket/pathlib boundaries. Done in-
-  process these are advisory at best (any plugin can monkeypatch them
-  back); done correctly they need the plugin to run in a child process
-  the router controls. Scheduled together with the plugin runtime
-  sandbox, not before.
+  still planned. Require interception at subprocess/socket/pathlib
+  boundaries. Done in-process these are advisory at best (any plugin
+  can monkeypatch them back); done correctly they need the plugin to
+  run in a child process the router controls. Scheduled together with
+  the plugin runtime sandbox, not before.
 
 ## Threat model summary
 
@@ -99,7 +110,8 @@ two because the two surfaces have very different cost profiles:
 | Plugin reads `.env` directly                                   | 3     | Credentials resolved via `core.secrets` with scope check; plugins never see raw env. |
 | Newline injection in credential value escapes scope            | 3     | Control chars rejected at write time.                                          |
 | User exposes more tools than intended                          | 4     | `profiles/<name>.yaml` allowlist; empty profile = only core tools.             |
-| Plugin wants filesystem outside declared `filesystem_read`     | 5     | Planned. Helper in place; enforcement pending plugin mounting phase.           |
+| Plugin exposes a tool the operator does not want invokable     | 5     | `[tools].whitelist/blacklist` enforced by FastMCP middleware on list + call.   |
+| Plugin wants filesystem outside declared `filesystem_read`     | 5     | Planned. Needs process boundary — scheduled with plugin runtime sandbox.       |
 | Plugin exfiltrates data via arbitrary sockets                  | 5     | Planned. Same phase as above.                                                  |
 
 ## Known limitations

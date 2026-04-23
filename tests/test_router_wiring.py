@@ -772,3 +772,281 @@ def test_setup_tool_skips_audit_when_disabled(tmp_path, monkeypatch):
     fn()  # type: ignore[operator]
 
     assert captured == []
+
+
+# ---------------------------------------------------------------------------
+# Fase 6c — [tools].whitelist/blacklist middleware enforcement
+# ---------------------------------------------------------------------------
+
+
+def _mk_policy_plugin(
+    cfg: router_mod.RouterConfig,
+    name: str,
+    *,
+    whitelist: list[str] | None = None,
+    blacklist: list[str] | None = None,
+) -> None:
+    """Same as _mk_mountable_plugin but with a [tools] policy attached."""
+    wl = ", ".join(f'"{p}"' for p in (whitelist or []))
+    bl = ", ".join(f'"{p}"' for p in (blacklist or []))
+    _mk_plugin(
+        cfg.plugin_dir,
+        name,
+        f"""
+        [plugin]
+        name = "{name}"
+        version = "1.0.0"
+
+        [runtime]
+        entry = "server.py"
+
+        [security]
+
+        [tools]
+        whitelist = [{wl}]
+        blacklist = [{bl}]
+        """,
+    )
+    (cfg.plugin_dir / name / "server.py").write_text(
+        "# placeholder entry\n", encoding="utf-8"
+    )
+
+
+def test_build_tool_policy_skips_plugins_without_policy(tmp_path):
+    """A plugin with empty whitelist/blacklist adds zero middleware cost —
+    no entry in the policy dict means the hot path never sees it."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_mountable_plugin(cfg, "nopolicy")
+    _mk_policy_plugin(cfg, "withpolicy", blacklist=["dangerous_*"])
+    state = router_mod.RouterState.bootstrap(cfg)
+
+    policy = router_mod._build_tool_policy(state)
+
+    assert "nopolicy" not in policy
+    assert "withpolicy" in policy
+    assert policy["withpolicy"]["blacklist"] == ["dangerous_*"]
+
+
+def test_build_tool_policy_skips_non_ok_plugins(tmp_path):
+    """Plugins in error/pending/disabled don't expose tools, so including
+    their policy would be dead weight and potentially misleading."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_policy_plugin(cfg, "ok_plug", blacklist=["bad"])
+    # A plugin with unmet requires lands in pending_setup.
+    _mk_plugin(
+        cfg.plugin_dir,
+        "pending_plug",
+        """
+        [plugin]
+        name = "pending_plug"
+        version = "1.0.0"
+
+        [security]
+
+        [tools]
+        blacklist = ["something"]
+
+        [[requires.hosts]]
+        type = "proxmox"
+        min = 1
+        prompt = "need it"
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+
+    policy = router_mod._build_tool_policy(state)
+
+    assert "ok_plug" in policy
+    assert "pending_plug" not in policy
+
+
+def _run_async(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+class _FakeTool:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeCallToolCtx:
+    def __init__(self, name: str) -> None:
+        self.message = type("M", (), {"name": name})()
+
+
+def test_middleware_filters_denied_tools_from_list(tmp_path):
+    """The LLM should never even see tools denied by [tools] — if it
+    doesn't know they exist, it can't ask for them."""
+    policy = {"demo": {"blacklist": ["destroy_*"], "whitelist": []}}
+    mw = router_mod._make_tool_filter_middleware(policy)
+
+    async def _call_next(_ctx):
+        return [
+            _FakeTool("demo_read"),
+            _FakeTool("demo_destroy_all"),
+            _FakeTool("router_help"),  # outside namespace: always allowed
+        ]
+
+    out = _run_async(mw.on_list_tools(None, _call_next))
+
+    names = [t.name for t in out]
+    assert "demo_read" in names
+    assert "demo_destroy_all" not in names
+    assert "router_help" in names
+
+
+def test_middleware_respects_whitelist_only(tmp_path):
+    """With a non-empty whitelist, anything not explicitly allowed is
+    dropped (fail-closed semantics matching tool_allowed()). Patterns
+    in the manifest are matched against the LOCAL tool name — the
+    namespace prefix is stripped before the check so plugin authors
+    don't need to know how the router composes full names."""
+    policy = {"demo": {"whitelist": ["list_*"], "blacklist": []}}
+    mw = router_mod._make_tool_filter_middleware(policy)
+
+    async def _call_next(_ctx):
+        return [
+            _FakeTool("demo_list_hosts"),
+            _FakeTool("demo_write_file"),
+        ]
+
+    out = _run_async(mw.on_list_tools(None, _call_next))
+
+    names = [t.name for t in out]
+    assert names == ["demo_list_hosts"]
+
+
+def test_middleware_blocks_call_of_denied_tool(tmp_path):
+    """Defence in depth: a client with a stale list_tools cache still
+    cannot invoke a denied tool — the call path rejects it before
+    reaching the proxy."""
+    policy = {"demo": {"blacklist": ["destroy_*"], "whitelist": []}}
+    mw = router_mod._make_tool_filter_middleware(policy)
+
+    called = []
+
+    async def _call_next(_ctx):
+        called.append(_ctx)
+        return "should-not-reach"
+
+    ctx = _FakeCallToolCtx("demo_destroy_all")
+
+    with pytest.raises(ValueError, match="denied by plugin"):
+        _run_async(mw.on_call_tool(ctx, _call_next))
+
+    assert called == []  # call_next never ran for the denied tool
+
+
+def test_middleware_passes_through_allowed_calls(tmp_path):
+    """Allowed tools (and tools outside any policy namespace) must
+    forward to ``call_next`` unchanged."""
+    policy = {"demo": {"blacklist": ["destroy_*"], "whitelist": []}}
+    mw = router_mod._make_tool_filter_middleware(policy)
+
+    async def _call_next(ctx):
+        return f"result:{ctx.message.name}"
+
+    out = _run_async(mw.on_call_tool(_FakeCallToolCtx("demo_read"), _call_next))
+    assert out == "result:demo_read"
+
+    out2 = _run_async(mw.on_call_tool(_FakeCallToolCtx("router_help"), _call_next))
+    assert out2 == "result:router_help"
+
+
+def test_build_mcp_attaches_middleware_when_policy_present(tmp_path, monkeypatch):
+    """End-to-end: when any mounted plugin declares a [tools] policy,
+    build_mcp must install the filter middleware exactly once."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_policy_plugin(cfg, "guarded", blacklist=["danger"])
+    state = router_mod.RouterState.bootstrap(cfg)
+
+    # Stub fastmcp so we don't need the real server to count middlewares.
+    import sys as _sys
+
+    class _StubMCP:
+        """Dual-signature fake for ``@mcp.tool`` and ``mcp.tool(name=...)``.
+
+        The router uses both forms; a realistic stub has to accept both.
+        """
+        def __init__(self, *_a, **_kw) -> None:
+            self.middlewares: list[object] = []
+            self.mounts: list[tuple] = []
+            self._tools: dict[str, object] = {}
+
+        def tool(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if args and callable(args[0]):
+                # Bare @mcp.tool usage — args[0] is the function.
+                fn = args[0]
+                self._tools[fn.__name__] = fn
+                return fn
+            name = kwargs.get("name")
+            def deco(fn):  # type: ignore[no-untyped-def]
+                self._tools[name or fn.__name__] = fn
+                return fn
+            return deco
+
+        def mount(self, server, namespace):  # type: ignore[no-untyped-def]
+            self.mounts.append((server, namespace))
+
+        def add_middleware(self, mw):  # type: ignore[no-untyped-def]
+            self.middlewares.append(mw)
+
+    fake_fastmcp = type(_sys)("fastmcp")
+    fake_fastmcp.FastMCP = _StubMCP
+    fake_server = type(_sys)("fastmcp.server")
+    fake_server.create_proxy = lambda cfg: ("proxy", cfg)
+    # Real middleware import still needs to resolve, so expose the real
+    # one from the already-installed package.
+    import fastmcp.server.middleware as _real_mw
+    fake_mw = type(_sys)("fastmcp.server.middleware")
+    fake_mw.Middleware = _real_mw.Middleware
+    fake_server.middleware = fake_mw
+
+    monkeypatch.setitem(_sys.modules, "fastmcp", fake_fastmcp)
+    monkeypatch.setitem(_sys.modules, "fastmcp.server", fake_server)
+    monkeypatch.setitem(_sys.modules, "fastmcp.server.middleware", fake_mw)
+
+    mcp = router_mod.build_mcp(state)
+
+    assert len(mcp.middlewares) == 1
+    assert len(mcp.mounts) == 1 and mcp.mounts[0][1] == "guarded"
+
+
+def test_build_mcp_no_middleware_when_all_plugins_open(tmp_path, monkeypatch):
+    """If no plugin declares a policy, the middleware is not attached —
+    the common case pays zero cost."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_mountable_plugin(cfg, "open_plug")  # no [tools] section
+    state = router_mod.RouterState.bootstrap(cfg)
+
+    import sys as _sys
+
+    class _StubMCP:
+        def __init__(self, *_a, **_kw) -> None:
+            self.middlewares: list[object] = []
+            self.mounts: list[tuple] = []
+
+        def tool(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if args and callable(args[0]):
+                return args[0]
+            def deco(fn):  # type: ignore[no-untyped-def]
+                return fn
+            return deco
+
+        def mount(self, server, namespace):  # type: ignore[no-untyped-def]
+            self.mounts.append((server, namespace))
+
+        def add_middleware(self, mw):  # type: ignore[no-untyped-def]
+            self.middlewares.append(mw)
+
+    fake_fastmcp = type(_sys)("fastmcp")
+    fake_fastmcp.FastMCP = _StubMCP
+    fake_server = type(_sys)("fastmcp.server")
+    fake_server.create_proxy = lambda cfg: object()
+    monkeypatch.setitem(_sys.modules, "fastmcp", fake_fastmcp)
+    monkeypatch.setitem(_sys.modules, "fastmcp.server", fake_server)
+
+    mcp = router_mod.build_mcp(state)
+
+    assert mcp.middlewares == []
