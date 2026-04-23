@@ -22,7 +22,7 @@ from typing import Any
 
 from core import audit
 from core.inventory import Inventory, InventoryError
-from core.loader import LoadReport, PluginState, reconcile
+from core.loader import LoadReport, reconcile
 from core.memory import MemoryBackend, load_backend
 from core.profile import load_enabled_plugins
 from core.skills import Skill, discover_agents, discover_skills
@@ -150,6 +150,9 @@ class RouterState:
 
     def refresh(self) -> None:
         self.inventory = Inventory.load(self.cfg.inventory_dir)
+        # Reload the profile gate live: editing profiles/<name>.yaml no longer
+        # requires a restart to take effect.
+        self.profile_enabled = load_enabled_plugins(self.cfg.profile_path)
         self.report = reconcile(
             self.cfg.plugin_dir,
             self.inventory,
@@ -346,7 +349,7 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
     # plugin so the LLM can discover them via tools/list.
     for plugin_state in state.report.plugins:
         if plugin_state.status == "pending_setup":
-            _register_setup_tool(mcp, plugin_state)
+            _register_setup_tool(mcp, state, plugin_state.manifest.name)
 
     # Skills and agents as read-only tools.
     for skill in state.skills:
@@ -357,27 +360,61 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
     return mcp
 
 
-def _register_setup_tool(mcp, plugin_state: PluginState) -> None:  # type: ignore[no-untyped-def]
-    name = plugin_state.manifest.name
-    tool_name = f"setup_{name}"
+def _setup_payload(state: "RouterState", plugin_name: str) -> dict:
+    """Build the setup_<plugin>() response from *live* router state.
 
-    def _setup() -> dict:
+    Extracted from the MCP tool wrapper so unit tests can exercise the
+    live-state behaviour without requiring fastmcp.
+    """
+    live = next(
+        (p for p in state.report.plugins if p.manifest.name == plugin_name),
+        None,
+    )
+    if live is None:
         return {
-            "plugin": name,
-            "version": plugin_state.manifest.version,
-            "status": plugin_state.status,
-            "missing": [
-                {"kind": r.kind, "detail": r.detail, "prompt": r.prompt}
-                for r in plugin_state.missing
-            ],
+            "plugin": plugin_name,
+            "status": "not_found",
+            "missing": [],
             "next_tool_hint": (
-                "Call router_add_host / router_add_credential with the "
-                "details each missing requirement describes."
+                "Plugin no longer discoverable — call router_status() for "
+                "the current picture."
             ),
         }
+    return {
+        "plugin": plugin_name,
+        "version": live.manifest.version,
+        "status": live.status,
+        "missing": [
+            {"kind": r.kind, "detail": r.detail, "prompt": r.prompt}
+            for r in live.missing
+        ],
+        "next_tool_hint": (
+            "Setup complete — the plugin is active. Call router_status() "
+            "for the full inventory."
+            if live.status == "ok"
+            else "Call router_add_host / router_add_credential with the "
+            "details each missing requirement describes."
+        ),
+    }
+
+
+def _register_setup_tool(mcp, state: "RouterState", plugin_name: str) -> None:  # type: ignore[no-untyped-def]
+    """Register setup_<plugin>() that reads live state on each invocation.
+
+    MCP stdio cannot de-register tools mid-session, so a tool registered
+    because the plugin was pending at bootstrap stays exposed forever. The
+    tool must therefore report the *current* status — not a snapshot taken
+    at registration time — so the LLM sees ``ok`` once setup completes.
+    """
+    tool_name = f"setup_{plugin_name}"
+
+    def _setup() -> dict:
+        return _setup_payload(state, plugin_name)
 
     _setup.__name__ = tool_name
-    _setup.__doc__ = f"Explain what is still needed before plugin '{name}' activates."
+    _setup.__doc__ = (
+        f"Report what is still needed before plugin '{plugin_name}' activates."
+    )
     mcp.tool(name=tool_name)(_setup)
 
 

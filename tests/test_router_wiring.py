@@ -298,6 +298,156 @@ def test_format_report_shows_quarantined(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _setup_payload — live state, not closure snapshot (R1 / FIX A)
+# ---------------------------------------------------------------------------
+
+
+def test_setup_payload_returns_live_status_after_refresh(tmp_path):
+    """Una vez el usuario completa setup, setup_<plugin>() debe reportar
+    ``status=ok``. El fallo historico: el payload capturaba el estado al
+    registrar la tool y quedaba mintiendo para siempre."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "needshost",
+        """
+        [plugin]
+        name = "needshost"
+        version = "1.0.0"
+
+        [security]
+
+        [[requires.hosts]]
+        type = "linux"
+        min = 1
+        prompt = "need linux"
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    assert state.report.plugins[0].status == "pending_setup"
+    before = router_mod._setup_payload(state, "needshost")
+    assert before["status"] == "pending_setup"
+    assert len(before["missing"]) == 1
+
+    (cfg.inventory_dir / "hosts.yaml").write_text(
+        "hosts:\n  - name: h\n    type: linux\n    address: 192.0.2.1\n",
+        encoding="utf-8",
+    )
+    state.refresh()
+
+    after = router_mod._setup_payload(state, "needshost")
+    assert after["status"] == "ok"
+    assert after["missing"] == []
+    assert "Setup complete" in after["next_tool_hint"]
+
+
+def test_setup_payload_reflects_partial_progress(tmp_path, monkeypatch):
+    """Con dos requisitos (host + credencial), satisfacer solo uno debe
+    reducir la lista de ``missing``."""
+    cfg = _tmp_cfg(tmp_path)
+    monkeypatch.delenv("NEEDS_BOTH_TOKEN", raising=False)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "needsboth",
+        """
+        [plugin]
+        name = "needsboth"
+        version = "1.0.0"
+
+        [security]
+
+        [[requires.hosts]]
+        type = "linux"
+        min = 1
+        prompt = "need host"
+
+        [[requires.credentials]]
+        pattern = "NEEDS_BOTH_TOKEN"
+        prompt = "need token"
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    start = router_mod._setup_payload(state, "needsboth")
+    assert start["status"] == "pending_setup"
+    assert len(start["missing"]) == 2
+
+    (cfg.inventory_dir / "hosts.yaml").write_text(
+        "hosts:\n  - name: h\n    type: linux\n    address: 192.0.2.1\n",
+        encoding="utf-8",
+    )
+    state.refresh()
+
+    partial = router_mod._setup_payload(state, "needsboth")
+    assert partial["status"] == "pending_setup"
+    assert len(partial["missing"]) == 1
+    assert partial["missing"][0]["kind"] == "credentials"
+
+
+def test_setup_payload_handles_plugin_disappeared(tmp_path):
+    """Si el plugin desaparece entre refreshes, el payload devuelve
+    ``status=not_found`` en vez de crashear."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "goner",
+        """
+        [plugin]
+        name = "goner"
+        version = "1.0.0"
+
+        [security]
+
+        [[requires.hosts]]
+        type = "x"
+        min = 1
+        prompt = ""
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    assert state.report.plugins[0].manifest.name == "goner"
+
+    import shutil
+
+    shutil.rmtree(cfg.plugin_dir / "goner")
+    state.refresh()
+
+    gone = router_mod._setup_payload(state, "goner")
+    assert gone["status"] == "not_found"
+    assert gone["missing"] == []
+
+
+# ---------------------------------------------------------------------------
+# RouterState.refresh — profile reload (R3 / FIX B)
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_reloads_profile_enabled_from_yaml(tmp_path):
+    """Editar ``profiles/<name>.yaml`` en caliente debe surtir efecto en el
+    siguiente ``refresh()`` — no requerir restart."""
+    cfg = _tmp_cfg(tmp_path, "enabled_plugins: []\n")
+    _mk_plugin(
+        cfg.plugin_dir,
+        "aplug",
+        """
+        [plugin]
+        name = "aplug"
+        version = "1.0.0"
+
+        [security]
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    assert state.profile_enabled == set()
+    assert state.report.plugins[0].status == "disabled_by_profile"
+
+    cfg.profile_path.write_text("enabled_plugins:\n  - aplug\n", encoding="utf-8")
+    state.refresh()
+
+    assert state.profile_enabled == {"aplug"}
+    assert state.report.plugins[0].status == "ok"
+
+
+# ---------------------------------------------------------------------------
 # build_mcp — only when fastmcp installed
 # ---------------------------------------------------------------------------
 

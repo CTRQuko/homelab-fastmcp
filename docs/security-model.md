@@ -91,6 +91,42 @@ entry points), which is scheduled for a later phase.
 | Plugin wants filesystem outside declared `filesystem_read`     | 5     | Planned. Helper in place; enforcement pending plugin mounting phase.           |
 | Plugin exfiltrates data via arbitrary sockets                  | 5     | Planned. Same phase as above.                                                  |
 
+## Known limitations
+
+Two constraints are inherent to the MCP stdio transport and cannot be fully
+fixed inside the router. They are flagged here so plugin authors and
+operators can plan around them.
+
+### `setup_<plugin>()` tools persist for the whole session
+
+MCP stdio has no way for a server to de-register a tool after the handshake.
+Once `setup_<plugin>()` is exposed at startup (because the plugin was
+`pending_setup`), the client keeps seeing it for the rest of the session,
+even after the plugin reaches `ok`.
+
+The router mitigates this by reading *live* state inside the tool: a
+completed plugin returns `{"status": "ok", "missing": []}` so the LLM sees
+the setup is done. The tool itself stays exposed, but it no longer lies.
+Use `router_status()` as the single source of truth for the active plugin
+set; treat `setup_*` tools as one-plugin shortcuts rather than a reliable
+"pending" signal.
+
+### Credential values travel through the MCP client
+
+When an LLM calls `router_add_credential(ref, value)`, the `value` argument
+is serialised by the MCP client before reaching the router. The router's
+audit log never writes the value (only a hash of the `ref`), but any
+client-side transcript or tool-call log records the argument as-is. For
+Claude Desktop and similar clients this means the raw credential will sit
+in conversation history.
+
+If that is unacceptable, add credentials out-of-band: either write them
+directly into `$HOMELAB_DIR/.config/secrets/router_vault.md` (same `ref =
+value` format, one per line, mode `0o600`) or set the matching environment
+variable before starting the router. The router's `get_credential()` lookup
+order is env var → vault file, so either path works without the LLM ever
+seeing the value.
+
 ## Non-goals
 
 - **Sandbox escape protection** — the framework is not a security sandbox.
