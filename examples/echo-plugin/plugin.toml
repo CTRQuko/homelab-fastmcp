@@ -1,0 +1,42 @@
+# Example plugin manifest — minimal, complete, documented.
+#
+# Drop this directory under a router's plugins/ folder (or symlink it)
+# and the router will discover, mount and expose echo_echo / echo_reverse
+# tools to the MCP client. Use this file as the template for a real
+# plugin.
+
+[plugin]
+# Machine-readable identity. Must be lowercase, alnum + underscore.
+# Becomes the tool namespace prefix: a plugin named "echo" exposes
+# tools as echo_<tool>.
+name = "echo"
+version = "1.0.0"
+# Human description for the LLM. Shown by router_status().
+description = "Trivial demo plugin. Two tools: echo and reverse."
+# Default true. Set false to keep the manifest parsable but skip mount.
+enabled = true
+
+[runtime]
+# Simplest form: a Python script in the plugin's own directory. The
+# router launches it with its own interpreter. Alternative form —
+# command + args — is shown in docs/naming-guide.md for plugins that
+# need uv / uvx / node / etc.
+entry = "server.py"
+
+[security]
+# A plugin with no secrets to read has an empty credential_refs list.
+# For real plugins (PROXMOX_*, GITHUB_TOKEN, etc.), declare the fnmatch
+# patterns the plugin's subprocess is allowed to receive.
+credential_refs = []
+
+[tools]
+# Fine-grained control over which tools the router exposes. Empty
+# whitelist + empty blacklist = "expose everything the plugin defines".
+# See docs/security-model.md for pattern semantics.
+whitelist = []
+blacklist = []
+
+# No [[requires.hosts]] or [[requires.credentials]] sections here —
+# this plugin runs standalone. A real plugin that talks to external
+# infra would declare them so setup_<plugin>() can guide the user
+# through the missing pieces before the plugin activates.
