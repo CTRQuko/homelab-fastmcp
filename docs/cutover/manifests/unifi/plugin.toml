@@ -1,0 +1,21 @@
+# Fase 7 cutover manifest — UniFi controller API (upstream uvx package).
+
+[plugin]
+name = "unifi"
+version = "1.0.0"
+enabled = true
+
+[runtime]
+# unifi-mcp-server ya se publica como paquete uvx — no necesita checkout.
+command = "uvx"
+args = ["unifi-mcp-server"]
+
+[security]
+credential_refs = ["UNIFI_*"]
+
+[[requires.credentials]]
+pattern = "UNIFI_API_KEY"
+prompt = """
+Necesito UNIFI_API_KEY (token de la UniFi UI con permisos lectura) más
+UNIFI_CONTROLLER_URL apuntando a la API, puerto 11443 por defecto.
+"""

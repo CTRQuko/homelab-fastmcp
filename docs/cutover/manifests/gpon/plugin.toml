@@ -1,0 +1,21 @@
+# Fase 7 cutover manifest — CTRQuko/gpon-mcp.
+
+[plugin]
+name = "gpon"
+version = "1.0.0"
+enabled = true
+
+[runtime]
+command = "uv"
+args = ["run", "gpon-mcp"]
+
+[security]
+credential_refs = ["GPON_*"]
+
+[[requires.credentials]]
+pattern = "GPON_*"
+prompt = """
+GPON necesita al menos GPON_HOST (stick por defecto) y, si aplica,
+GPON_USER / GPON_PASSWORD o clave SSH equivalente. Mira el README de
+CTRQuko/gpon-mcp para los refs exactos soportados.
+"""

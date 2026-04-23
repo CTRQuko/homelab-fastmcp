@@ -1,0 +1,37 @@
+# Fase 7 cutover manifest — drop this file in
+#   C:/homelab/mcp-servers/homelab-mcp/plugin.toml
+# and symlink / clone that repo into
+#   C:/homelab/mcp-servers/homelab-fastmcp/plugins/proxmox/
+#
+# The existing CTRQuko/homelab-mcp repo already ships `homelab-proxmox-mcp`
+# as a uv entry point — no code migration required, just this manifest.
+
+[plugin]
+name = "proxmox"
+version = "1.0.0"
+enabled = true
+
+[runtime]
+command = "uv"
+args = ["run", "homelab-proxmox-mcp"]
+
+[security]
+credential_refs = ["PROXMOX_*"]
+
+# One proxmox node is the realistic floor — the plugin becomes useful the
+# moment the LLM can call `proxmox_list_nodes` against at least one host.
+[[requires.hosts]]
+type = "proxmox"
+min = 1
+prompt = """
+Necesito al menos un nodo Proxmox con un token API con permisos
+VM.Audit + VM.PowerMgmt. Dame nombre, dirección (IP:puerto) y el ref del
+credential (ej. PROXMOX_PVE1_TOKEN).
+"""
+
+[[requires.credentials]]
+pattern = "PROXMOX_*"
+prompt = """
+Por cada nodo Proxmox necesito al menos PROXMOX_<NOMBRE>_HOST,
+PROXMOX_<NOMBRE>_USER y PROXMOX_<NOMBRE>_TOKEN (value del token API).
+"""

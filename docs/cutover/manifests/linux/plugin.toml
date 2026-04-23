@@ -1,0 +1,28 @@
+# Fase 7 cutover manifest — Linux SSH operations.
+# Drop in C:/homelab/mcp-servers/homelab-mcp/plugin.toml (same repo as
+# proxmox, just renamed/duplicated per plugin) OR split the repo so each
+# sub-MCP has its own home.
+
+[plugin]
+name = "linux"
+version = "1.0.0"
+enabled = true
+
+[runtime]
+command = "uv"
+args = ["run", "homelab-linux-mcp"]
+
+[security]
+# SSH keys come from ~/.ssh via the router's shell env — no named
+# credential refs for the MVP. When credential-ref'd keys land, add the
+# right pattern here.
+credential_refs = []
+
+[[requires.hosts]]
+type = "linux"
+min = 1
+prompt = """
+Necesito al menos un host Linux accesible por SSH con la clave que use
+este router. Dame nombre, dirección (host:port) y si usas user
+explícito distinto al del agente.
+"""

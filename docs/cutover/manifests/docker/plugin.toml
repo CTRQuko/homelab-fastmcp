@@ -1,0 +1,13 @@
+# Fase 7 cutover manifest — Docker containers/images (Windows only today).
+
+[plugin]
+name = "docker"
+version = "1.0.0"
+enabled = true
+
+[runtime]
+command = "uv"
+args = ["run", "homelab-docker-mcp"]
+
+[security]
+credential_refs = []

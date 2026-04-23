@@ -1014,6 +1014,129 @@ def test_build_mcp_attaches_middleware_when_policy_present(tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# Fase 7a — [runtime].command/args alternative (uv run, uvx, node…)
+# ---------------------------------------------------------------------------
+
+
+def _mk_cmd_plugin(
+    cfg: router_mod.RouterConfig,
+    name: str,
+    *,
+    command: str,
+    args: list[str],
+) -> None:
+    args_toml = ", ".join(f'"{a}"' for a in args)
+    _mk_plugin(
+        cfg.plugin_dir,
+        name,
+        f"""
+        [plugin]
+        name = "{name}"
+        version = "1.0.0"
+
+        [runtime]
+        command = "{command}"
+        args = [{args_toml}]
+
+        [security]
+        """,
+    )
+
+
+def test_runtime_command_payload_uses_declared_command(tmp_path):
+    """``[runtime].command`` replaces the default ``sys.executable`` +
+    entry launcher — exactly what's needed to delegate to ``uv run``,
+    ``uvx`` or any other process manager."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_cmd_plugin(cfg, "prox", command="uv", args=["run", "homelab-proxmox-mcp"])
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "prox")
+
+    payload = router_mod._plugin_mount_config(ps)
+    server = payload["mcpServers"]["default"]
+
+    assert server["command"] == "uv"
+    assert server["args"] == ["run", "homelab-proxmox-mcp"]
+    # cwd set to the plugin's own directory so ``uv run`` resolves the
+    # right pyproject/venv without needing ``--directory``.
+    assert Path(server["cwd"]) == (cfg.plugin_dir / "prox").resolve()
+    assert "env" in server  # subprocess env scoping still applies
+
+
+def test_runtime_command_substitutes_plugin_dir_placeholder(tmp_path):
+    """``{plugin_dir}`` in args resolves to the absolute plugin path, so
+    the manifest stays portable between checkout locations."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_cmd_plugin(
+        cfg,
+        "gpon",
+        command="uv",
+        args=["--directory", "{plugin_dir}", "run", "gpon-mcp"],
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "gpon")
+
+    payload = router_mod._plugin_mount_config(ps)
+    args = payload["mcpServers"]["default"]["args"]
+
+    plugin_dir = (cfg.plugin_dir / "gpon").resolve()
+    assert args[0] == "--directory"
+    assert Path(args[1]) == plugin_dir
+    assert args[2:] == ["run", "gpon-mcp"]
+
+
+def test_runtime_without_command_or_entry_raises(tmp_path):
+    """A manifest with an empty ``[runtime]`` section cannot be mounted —
+    the error must point both forms (entry + command) so plugin authors
+    know their options."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "empty_runtime",
+        """
+        [plugin]
+        name = "empty_runtime"
+        version = "1.0.0"
+
+        [runtime]
+        # no entry, no command
+
+        [security]
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "empty_runtime")
+
+    with pytest.raises(ValueError, match="entry.*command"):
+        router_mod._plugin_mount_config(ps)
+
+
+def test_runtime_command_not_string_raises(tmp_path):
+    """``command`` must be a string; a list would silently break the
+    spawn. Fail loudly so the plugin shows up as ``error`` in status."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "badcmd",
+        """
+        [plugin]
+        name = "badcmd"
+        version = "1.0.0"
+
+        [runtime]
+        command = ["uv", "run"]
+
+        [security]
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "badcmd")
+
+    with pytest.raises(ValueError, match="command must be a string"):
+        router_mod._plugin_mount_config(ps)
+
+
+# ---------------------------------------------------------------------------
 # Fase 6d — subprocess env scoping (foreign-credential filter)
 # ---------------------------------------------------------------------------
 

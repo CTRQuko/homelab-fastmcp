@@ -1,0 +1,17 @@
+# Fase 7 cutover manifest — Windows PowerShell + FS tools (Windows only).
+
+[plugin]
+name = "windows"
+version = "1.0.0"
+# Hoy se mountea solo en Windows (server.legacy.py). El framework no
+# impone un filtro de OS todavía — si corres el router en Linux y dejas
+# enabled=true, el plugin intentará arrancar y probablemente morirá. El
+# operador lo deshabilita via profile.
+enabled = true
+
+[runtime]
+command = "uv"
+args = ["run", "homelab-windows-mcp"]
+
+[security]
+credential_refs = []

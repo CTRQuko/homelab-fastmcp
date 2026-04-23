@@ -1,0 +1,14 @@
+# Fase 7 cutover manifest — CTRQuko/serial-mcp-toolkit (uart-mcp).
+
+[plugin]
+name = "uart"
+version = "1.0.0"
+enabled = true
+
+[runtime]
+command = "uv"
+args = ["run", "uart-mcp"]
+
+[security]
+# Acceso local a puertos serie: no se leen credenciales desde el vault.
+credential_refs = []

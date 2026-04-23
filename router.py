@@ -439,24 +439,62 @@ def _plugin_subprocess_env(
 def _plugin_mount_config(plugin_state, all_credential_patterns=None) -> dict:  # type: ignore[no-untyped-def]
     """Build the ``create_proxy`` config dict for one plugin.
 
+    Two manifest shapes are supported:
+
+    1. **Simple Python script** — ``[runtime].entry = "server.py"``. The
+       router launches ``sys.executable <plugin_dir>/server.py``.
+
+    2. **Custom command** — ``[runtime].command = "uv"`` plus
+       ``args = [...]``. Useful for ``uv run``, ``uvx``, ``node``, etc.
+       The router invokes exactly that command with ``cwd`` set to the
+       plugin's own directory. Occurrences of the literal
+       ``{plugin_dir}`` in ``args`` are substituted for the resolved
+       plugin path so authors don't need to hardcode absolute paths.
+
     Kept pure so tests can assert on the exact command/args without
-    touching FastMCP or spawning a subprocess. Current policy: use the
-    router's own Python interpreter and invoke ``[runtime].entry`` as a
-    script. Venv management, ``deps`` install and ``python`` version
-    matching are deferred — documented in docs/framework-deferrals.md.
+    touching FastMCP or spawning a subprocess. Venv management, ``deps``
+    install and ``python`` version matching are still deferred —
+    documented in docs/framework-deferrals.md.
 
     ``all_credential_patterns`` is the union of ``credential_refs``
     declared by every loaded plugin, used to scope foreign credentials
-    out of this plugin's subprocess env. When ``None`` only the plugin's
-    own patterns are considered — good enough for unit tests and for
-    the "single plugin loaded" case.
+    out of this plugin's subprocess env.
     """
     manifest = plugin_state.manifest
     runtime = manifest.runtime or {}
+    env = _plugin_subprocess_env(manifest, all_credential_patterns)
+    plugin_dir = str(manifest.path.resolve())
+
+    command = runtime.get("command")
+    if command:
+        if not isinstance(command, str):
+            raise ValueError(
+                f"{manifest.name}: [runtime].command must be a string"
+            )
+        raw_args = runtime.get("args") or []
+        if not isinstance(raw_args, list):
+            raise ValueError(
+                f"{manifest.name}: [runtime].args must be a list"
+            )
+        # {plugin_dir} substitution lets plugin authors keep the manifest
+        # location-agnostic — the router fills in the real absolute path.
+        args = [plugin_dir if a == "{plugin_dir}" else str(a) for a in raw_args]
+        return {
+            "mcpServers": {
+                "default": {
+                    "command": command,
+                    "args": args,
+                    "env": env,
+                    "cwd": plugin_dir,
+                }
+            }
+        }
+
     entry = runtime.get("entry")
     if not entry or not isinstance(entry, str):
         raise ValueError(
-            f"{manifest.name}: [runtime].entry is required to mount"
+            f"{manifest.name}: [runtime] must declare either 'entry' "
+            f"(Python script path) or 'command' (+ 'args')"
         )
     entry_path = (manifest.path / entry).resolve()
     if not entry_path.is_file():
@@ -468,7 +506,7 @@ def _plugin_mount_config(plugin_state, all_credential_patterns=None) -> dict:  #
             "default": {
                 "command": sys.executable,
                 "args": [str(entry_path)],
-                "env": _plugin_subprocess_env(manifest, all_credential_patterns),
+                "env": env,
             }
         }
     }

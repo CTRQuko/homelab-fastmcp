@@ -25,6 +25,14 @@ Fase 6b (mount), Fase 6c (tools filter middleware).
   `credential_refs` y bloquea credenciales ajenas — Fase 6d. Resuelve
   el gap que obligaba a `server.legacy.py` a hardcodear env por plugin
   (ver `docs/MCP-DOWNSTREAM-ISSUES.md`).
+- **`[runtime].command` + `args`** como alternativa a `[runtime].entry`
+  — permite `uv run`, `uvx`, `node` etc. con `{plugin_dir}` como
+  substitution portable. `cwd` del subprocess se fija a `manifest.path`.
+- **Cutover plan preparatorio** (Fase 7a): 7 manifests reales en
+  `docs/cutover/manifests/*/plugin.toml` (proxmox, linux, windows,
+  docker, unifi, uart, gpon) + `docs/cutover/README.md` con los pasos
+  exactos de Fase 7b y Fase 8, cubiertos por
+  `tests/test_cutover_manifests.py`.
 - `core/loader.tool_allowed` helper + `QuarantineEntry` para
   plugin.toml malformado.
 - `SqliteMemory` resuelve paths contra `router.ROOT`.
@@ -55,13 +63,23 @@ Fase 6b (mount), Fase 6c (tools filter middleware).
 
 ## Diferido — extracción y cutover
 
-- **Fase 7**: crear repos `plugins-{github,tailscale,uart,proxmox,linux,
-  windows,docker,gpon}-mcp`, añadir `plugin.toml` a cada uno y reescribir
-  para consumir `core.inventory` en vez de referencias hardcodeadas.
+- **Fase 7b** (ejecución): añadir `plugin.toml` a cada repo upstream
+  (`CTRQuko/homelab-mcp`, `CTRQuko/gpon-mcp`,
+  `CTRQuko/serial-mcp-toolkit`), checkoutear/symlinkar en `plugins/` y
+  validar con `router.py --dry-run`. Los manifests ya existen
+  (`docs/cutover/manifests/`) y el plan paso a paso está en
+  `docs/cutover/README.md`. Requiere commits a repos externos ⇒ OK
+  explícito del operador.
+- **Fase 7c** (nativo): decidir destino de `native_tools/{github,
+  tailscale,uart_detect}.py` — first-party en `core/` o micro-MCP
+  wrappeado. No bloquea Fase 8.
+- **Fase 7d**: `homelab-mcp` agrupa 4 plugins (proxmox + linux + windows
+  + docker). MVP acepta un único `plugin.toml` llamado `homelab` que
+  monta los 4 internamente; trocearlo en 4 repos o 4 manifests queda
+  para después.
 - **Fase 8**: apuntar Hermes (LXC 302 pve2) y Claude Desktop a `router.py`
   en vez de `server.py`, validar que el set de tools coincide, y solo
-  entonces eliminar `server.legacy.py`, `native_tools/`, `mcp-servers/
-  homelab-mcp/`, `mcp-servers/gpon-mcp/`.
+  entonces eliminar `server.legacy.py`, `native_tools/`.
 - **Fase 9**: README del framework, merge `refactor/modular-framework` →
   `main`, push.
 
@@ -75,7 +93,7 @@ Fase 6b (mount), Fase 6c (tools filter middleware).
 
 ## Estado de cobertura
 
-- 249 passed + 2 skipped (baseline de este rediseño era 112).
+- 276 passed + 2 skipped (baseline de este rediseño era 112).
 - `router.py --dry-run` arranca limpio con 0 plugins, 0 hosts.
 - Security review pasado con 4 fixes (newline injection, disabled-plugin
   widening, tomllib guard, `.md` col-0 strict parse) + Layer 5 tier 1
