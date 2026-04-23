@@ -19,7 +19,7 @@ from core.loader import parse_manifest
 import router as router_mod
 
 ROOT = Path(__file__).resolve().parent.parent
-CUTOVER_DIR = ROOT / "docs" / "cutover" / "manifests"
+CUTOVER_DIR = ROOT / "docs" / "operator-notes" / "cutover" / "manifests"
 EXPECTED_PLUGINS = {"proxmox", "linux", "windows", "docker", "unifi", "uart", "gpon"}
 
 
