@@ -27,6 +27,26 @@ _log = logging.getLogger(__name__)
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 _NAME_SANITIZE_RE = re.compile(r"[^a-z0-9_]")
 
+# Directories that never contain user skills but may be accidentally placed
+# under skills_dir (dev clones, python/node caches). Skipping them bounds
+# the cost of discovery on misconfigured layouts.
+_SKIP_DIRS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".git",
+        ".venv",
+        "venv",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+    }
+)
+
+# rglob had no depth cap. A maliciously or accidentally deep tree would
+# stall startup. 5 covers any reasonable skills layout.
+_MAX_DEPTH = 5
+
 
 @dataclass(frozen=True)
 class Skill:
@@ -56,11 +76,38 @@ def _tool_safe_name(raw: str) -> str:
     return slug.strip("_") or "unnamed"
 
 
+def _iter_markdown(root: Path) -> list[Path]:
+    """Walk ``root`` collecting ``*.md`` files, skipping noisy dirs and
+    stopping at ``_MAX_DEPTH`` to bound the cost on misconfigured layouts."""
+    found: list[Path] = []
+
+    def walk(current: Path, depth: int) -> None:
+        if depth > _MAX_DEPTH:
+            return
+        try:
+            entries = sorted(current.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    if entry.name in _SKIP_DIRS or entry.name.startswith("."):
+                        continue
+                    walk(entry, depth + 1)
+                elif entry.is_file() and entry.suffix == ".md":
+                    found.append(entry)
+            except OSError:
+                continue
+
+    walk(root, 0)
+    return found
+
+
 def _scan_dir(directory: Path, kind: str) -> list[Skill]:
     if not directory.exists() or not directory.is_dir():
         return []
     out: list[Skill] = []
-    for path in sorted(directory.rglob("*.md")):
+    for path in _iter_markdown(directory):
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError:

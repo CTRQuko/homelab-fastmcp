@@ -167,6 +167,88 @@ def test_skill_name_unnamed_fallback(tmp_path):
     assert skills[0].name == "unnamed"
 
 
+def test_iter_markdown_skips_node_modules_and_dot_dirs(tmp_path):
+    """Un ``skills_dir`` con ``node_modules/``, ``.git/`` o ``.venv/`` no
+    debe inflar el tiempo de discovery al recorrerlos (R7)."""
+    _write(
+        tmp_path / "good.md",
+        """\
+        ---
+        name: good
+        description: real skill
+        ---
+        body
+        """,
+    )
+    # Estos no deben ser visitados aunque contengan .md con frontmatter valido.
+    _write(
+        tmp_path / "node_modules" / "pkg" / "junk.md",
+        """\
+        ---
+        name: junk-node
+        description: should be skipped
+        ---
+        x
+        """,
+    )
+    _write(
+        tmp_path / ".git" / "hooks" / "junk.md",
+        """\
+        ---
+        name: junk-git
+        description: should be skipped
+        ---
+        x
+        """,
+    )
+    _write(
+        tmp_path / ".venv" / "site" / "junk.md",
+        """\
+        ---
+        name: junk-venv
+        description: should be skipped
+        ---
+        x
+        """,
+    )
+    names = sorted(s.name for s in discover_skills(tmp_path))
+    assert names == ["good"]
+
+
+def test_iter_markdown_respects_max_depth(tmp_path):
+    """rglob sin limite era un pie de plomo en arboles profundos. El
+    walk manual corta a profundidad 5, suficiente para cualquier layout
+    razonable (R7)."""
+    # Profundidad 6: tmp_path / d1 / d2 / d3 / d4 / d5 / d6 / deep.md
+    deep = tmp_path
+    for i in range(1, 7):
+        deep = deep / f"d{i}"
+    _write(
+        deep / "deep.md",
+        """\
+        ---
+        name: too-deep
+        description: beyond max depth
+        ---
+        x
+        """,
+    )
+    # Profundidad 3: dentro del limite.
+    _write(
+        tmp_path / "a" / "b" / "ok.md",
+        """\
+        ---
+        name: within-depth
+        description: reachable
+        ---
+        x
+        """,
+    )
+    names = sorted(s.name for s in discover_skills(tmp_path))
+    assert "within_depth" in names
+    assert "too_deep" not in names
+
+
 def test_skill_name_collision_logs_warning(tmp_path, caplog):
     """Dos skills con el mismo nombre: last-wins sigue aplicando pero ahora
     el operador ve un warning para detectar overrides no intencionados (R5)."""
