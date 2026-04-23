@@ -80,9 +80,17 @@ class PluginManifest:
 @dataclass
 class PluginState:
     manifest: PluginManifest
-    status: str  # "ok" | "pending_setup" | "disabled" | "error"
+    status: str  # "ok" | "pending_setup" | "disabled" | "error" | "quarantined"
     missing: list[Requirement] = field(default_factory=list)
     error: str | None = None
+
+
+@dataclass
+class QuarantineEntry:
+    """A plugin directory whose manifest could not be parsed."""
+
+    path: Path
+    error: str
 
 
 @dataclass
@@ -91,6 +99,7 @@ class LoadReport:
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     unchanged: list[str] = field(default_factory=list)
+    quarantined: list[QuarantineEntry] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +108,7 @@ class LoadReport:
                     "name": p.manifest.name,
                     "version": p.manifest.version,
                     "status": p.status,
+                    "path": str(p.manifest.path),
                     "missing": [asdict(m) for m in p.missing],
                     "error": p.error,
                 }
@@ -107,6 +117,9 @@ class LoadReport:
             "added": self.added,
             "removed": self.removed,
             "unchanged": self.unchanged,
+            "quarantined": [
+                {"path": str(q.path), "error": q.error} for q in self.quarantined
+            ],
         }
 
 
@@ -144,10 +157,16 @@ def parse_manifest(path: Path, strict: bool = True) -> PluginManifest:
     for item in requires_raw.get("hosts", []) or []:
         if not isinstance(item, dict) or "type" not in item:
             raise ManifestError(f"{path}: [requires.hosts] entries need a 'type'")
+        detail: dict[str, Any] = {
+            "type": item["type"],
+            "min": int(item.get("min", 1)),
+        }
+        if "tag" in item:
+            detail["tag"] = str(item["tag"])
         requires.append(
             Requirement(
                 kind="hosts",
-                detail={"type": item["type"], "min": int(item.get("min", 1))},
+                detail=detail,
                 prompt=str(item.get("prompt", "")),
             )
         )
@@ -181,7 +200,10 @@ def parse_manifest(path: Path, strict: bool = True) -> PluginManifest:
 
 def _check_requirement(req: Requirement, inventory: Inventory) -> bool:
     if req.kind == "hosts":
-        matches = inventory.get_hosts(type=req.detail.get("type"))
+        matches = inventory.get_hosts(
+            type=req.detail.get("type"),
+            tag=req.detail.get("tag"),
+        )
         return len(matches) >= int(req.detail.get("min", 1))
     if req.kind == "credentials":
         pattern = req.detail.get("pattern", "")
@@ -211,18 +233,29 @@ def evaluate_plugin(manifest: PluginManifest, inventory: Inventory) -> PluginSta
 # ---------------------------------------------------------------------------
 
 
-def discover_manifests(plugin_dir: Path, strict: bool = True) -> list[PluginManifest]:
+def discover_manifests(
+    plugin_dir: Path, strict: bool = True
+) -> tuple[list[PluginManifest], list[QuarantineEntry]]:
+    """Walk ``plugin_dir`` and split results into valid manifests + quarantine.
+
+    A malformed ``plugin.toml`` used to abort the whole discovery; now it is
+    isolated so one bad plugin cannot hide healthy siblings from the router.
+    """
     if not plugin_dir.exists():
-        return []
-    out: list[PluginManifest] = []
+        return [], []
+    manifests: list[PluginManifest] = []
+    quarantined: list[QuarantineEntry] = []
     for candidate in sorted(plugin_dir.iterdir()):
         if not candidate.is_dir() or candidate.name.startswith((".", "_")):
             continue
         manifest_path = candidate / "plugin.toml"
         if not manifest_path.exists():
             continue
-        out.append(parse_manifest(manifest_path, strict=strict))
-    return out
+        try:
+            manifests.append(parse_manifest(manifest_path, strict=strict))
+        except ManifestError as exc:
+            quarantined.append(QuarantineEntry(path=candidate, error=str(exc)))
+    return manifests, quarantined
 
 
 def reconcile(
@@ -231,7 +264,7 @@ def reconcile(
     state_path: Path,
     strict: bool = True,
 ) -> LoadReport:
-    manifests = discover_manifests(plugin_dir, strict=strict)
+    manifests, quarantined = discover_manifests(plugin_dir, strict=strict)
     states = [evaluate_plugin(m, inventory) for m in manifests]
     current = {s.manifest.name for s in states}
     previous = _read_state(state_path)
@@ -240,6 +273,7 @@ def reconcile(
         added=sorted(current - previous),
         removed=sorted(previous - current),
         unchanged=sorted(current & previous),
+        quarantined=quarantined,
     )
     _write_state(state_path, current)
     return report
@@ -274,3 +308,20 @@ def _write_state(path: Path, plugins: set[str]) -> None:
 def match_requirement_to_patterns(patterns: list[str], ref: str) -> bool:
     """Utility the router uses when scoping ``router_add_credential`` refs."""
     return any(fnmatch.fnmatchcase(ref, pat) for pat in patterns)
+
+
+def tool_allowed(tools_cfg: dict[str, Any], tool_name: str) -> bool:
+    """Check a tool name against a plugin's ``[tools]`` section.
+
+    - ``blacklist``: if the tool matches any pattern here it is denied.
+    - ``whitelist``: if set and non-empty, the tool must match at least one
+      pattern. An empty/absent whitelist means "allow all not blacklisted".
+    """
+    blacklist = tools_cfg.get("blacklist") or []
+    for pat in blacklist:
+        if fnmatch.fnmatchcase(tool_name, str(pat)):
+            return False
+    whitelist = tools_cfg.get("whitelist") or []
+    if not whitelist:
+        return True
+    return any(fnmatch.fnmatchcase(tool_name, str(pat)) for pat in whitelist)

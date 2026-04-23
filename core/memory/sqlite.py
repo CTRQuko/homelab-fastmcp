@@ -17,12 +17,20 @@ from typing import Any
 
 from core.memory import MemoryBackend
 
+_FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 class SqliteMemory(MemoryBackend):
     name = "sqlite"
 
     def __init__(self, path: str | Path = "config/memory.db") -> None:
-        self._path = Path(path)
+        p = Path(path)
+        if not p.is_absolute():
+            # Relative paths resolve against the framework root, not CWD,
+            # so the router stays deterministic no matter where it was
+            # launched from.
+            p = _FRAMEWORK_ROOT / p
+        self._path = p
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         with self._connect() as conn:

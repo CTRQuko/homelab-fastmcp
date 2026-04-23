@@ -65,3 +65,31 @@ def test_sqlite_search_ordered_by_recency(tmp_path):
 def test_backend_is_abstract():
     with pytest.raises(TypeError):
         MemoryBackend()  # type: ignore[abstract]
+
+
+def test_sqlite_relative_path_resolves_against_framework_root(tmp_path, monkeypatch):
+    """Deuda técnica: paths relativos deben resolverse contra el root del framework,
+    no contra el CWD, para que el router sea determinista sin importar desde dónde
+    se lance."""
+    from core.memory import sqlite as sqlite_mod
+
+    # Simulamos que el framework vive en tmp_path, y lanzamos desde otro dir.
+    fake_root = tmp_path / "framework"
+    fake_root.mkdir()
+    monkeypatch.setattr(sqlite_mod, "_FRAMEWORK_ROOT", fake_root)
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+
+    b = SqliteMemory(path="config/mem.db")
+    # El fichero DB debe crearse bajo fake_root, no bajo other/.
+    expected = fake_root / "config" / "mem.db"
+    assert expected.exists()
+    assert not (other / "config" / "mem.db").exists()
+
+
+def test_sqlite_absolute_path_unchanged(tmp_path):
+    abs_path = tmp_path / "abs.db"
+    b = SqliteMemory(path=abs_path)
+    b.save("x")
+    assert abs_path.exists()

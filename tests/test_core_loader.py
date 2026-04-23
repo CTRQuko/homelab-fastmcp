@@ -194,9 +194,10 @@ def test_discover_skips_underscore_dirs(tmp_path):
         [security]
         """,
     )
-    manifests = discover_manifests(tmp_path / "plugins")
+    manifests, quarantined = discover_manifests(tmp_path / "plugins")
     names = [m.name for m in manifests]
     assert names == ["real"]
+    assert quarantined == []
 
 
 def test_credential_requirement_glob_matches_env(tmp_path, monkeypatch):
@@ -224,6 +225,158 @@ def test_credential_requirement_literal(tmp_path, monkeypatch):
     req = Requirement(kind="credentials", detail={"pattern": "LITERAL_TOKEN"}, prompt="")
     inv = Inventory.load(tmp_path)
     assert _check_requirement(req, inv) is True
+
+
+def test_discover_quarantines_malformed_plugin(tmp_path):
+    plugins = tmp_path / "plugins"
+    _mk_plugin(
+        plugins,
+        "good",
+        """
+        [plugin]
+        name = "good"
+        version = "0.1.0"
+
+        [security]
+        """,
+    )
+    # Broken TOML — unterminated section header
+    broken = plugins / "broken"
+    broken.mkdir(parents=True)
+    (broken / "plugin.toml").write_text("[plugin\nname = 'x'\n", encoding="utf-8")
+    manifests, quarantined = discover_manifests(plugins)
+    assert [m.name for m in manifests] == ["good"]
+    assert len(quarantined) == 1
+    assert quarantined[0].path.name == "broken"
+    assert "invalid TOML" in quarantined[0].error
+
+
+def test_reconcile_populates_quarantined(tmp_path):
+    plugins = tmp_path / "plugins"
+    broken = plugins / "b"
+    broken.mkdir(parents=True)
+    (broken / "plugin.toml").write_text("[plugin\n", encoding="utf-8")
+    inv = Inventory.load(tmp_path)
+    report = reconcile(plugins, inv, tmp_path / ".state.json")
+    assert report.plugins == []
+    assert len(report.quarantined) == 1
+
+
+def test_requires_hosts_with_tag_filters(tmp_path):
+    (tmp_path / "inv").mkdir()
+    (tmp_path / "inv" / "hosts.yaml").write_text(
+        "hosts:\n"
+        "  - name: a\n    type: linux\n    address: 192.0.2.1\n    tags: [prod]\n"
+        "  - name: b\n    type: linux\n    address: 192.0.2.2\n    tags: [dev]\n",
+        encoding="utf-8",
+    )
+    inv = Inventory.load(tmp_path / "inv")
+    path = _mk_plugin(
+        tmp_path,
+        "p",
+        """
+        [plugin]
+        name = "p"
+        version = "0.1.0"
+
+        [security]
+
+        [[requires.hosts]]
+        type = "linux"
+        tag = "prod"
+        min = 1
+        prompt = ""
+        """,
+    )
+    state = evaluate_plugin(parse_manifest(path), inv)
+    assert state.status == "ok"
+
+
+def test_requires_hosts_with_tag_pending_when_only_wrong_tag(tmp_path):
+    (tmp_path / "inv").mkdir()
+    (tmp_path / "inv" / "hosts.yaml").write_text(
+        "hosts:\n"
+        "  - name: b\n    type: linux\n    address: 192.0.2.2\n    tags: [dev]\n",
+        encoding="utf-8",
+    )
+    inv = Inventory.load(tmp_path / "inv")
+    path = _mk_plugin(
+        tmp_path,
+        "p",
+        """
+        [plugin]
+        name = "p"
+        version = "0.1.0"
+
+        [security]
+
+        [[requires.hosts]]
+        type = "linux"
+        tag = "prod"
+        min = 1
+        prompt = ""
+        """,
+    )
+    state = evaluate_plugin(parse_manifest(path), inv)
+    assert state.status == "pending_setup"
+    assert state.missing[0].detail["tag"] == "prod"
+
+
+def test_tool_allowed_blacklist_deny():
+    from core.loader import tool_allowed
+
+    assert tool_allowed({"blacklist": ["destroy_*"]}, "destroy_vm") is False
+    assert tool_allowed({"blacklist": ["destroy_*"]}, "list_vms") is True
+
+
+def test_tool_allowed_whitelist_only_matches():
+    from core.loader import tool_allowed
+
+    assert tool_allowed({"whitelist": ["read_*"]}, "read_file") is True
+    assert tool_allowed({"whitelist": ["read_*"]}, "write_file") is False
+
+
+def test_tool_allowed_empty_allows_all():
+    from core.loader import tool_allowed
+
+    assert tool_allowed({}, "anything") is True
+    assert tool_allowed({"whitelist": [], "blacklist": []}, "x") is True
+
+
+def test_tool_allowed_blacklist_beats_whitelist():
+    from core.loader import tool_allowed
+
+    assert (
+        tool_allowed(
+            {"whitelist": ["*"], "blacklist": ["destroy_*"]}, "destroy_vm"
+        )
+        is False
+    )
+
+
+def test_load_report_to_dict_serializes_path_and_quarantined(tmp_path):
+    plugins = tmp_path / "plugins"
+    _mk_plugin(
+        plugins,
+        "good",
+        """
+        [plugin]
+        name = "good"
+        version = "0.1.0"
+
+        [security]
+        """,
+    )
+    bad = plugins / "bad"
+    bad.mkdir(parents=True)
+    (bad / "plugin.toml").write_text("[plugin\n", encoding="utf-8")
+    inv = Inventory.load(tmp_path)
+    report = reconcile(plugins, inv, tmp_path / ".state.json")
+    d = report.to_dict()
+    assert d["plugins"][0]["name"] == "good"
+    assert "path" in d["plugins"][0]
+    assert d["quarantined"][0]["path"].endswith("bad")
+    assert "quarantined" in d
 
 
 def test_reconcile_detects_added_and_removed(tmp_path):
