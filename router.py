@@ -20,12 +20,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import logging
+
 from core import audit
 from core.inventory import Inventory, InventoryError
 from core.loader import LoadReport, reconcile
 from core.memory import MemoryBackend, load_backend
 from core.profile import load_enabled_plugins
 from core.skills import Skill, discover_agents, discover_skills
+
+_log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "config" / "router.toml"
@@ -350,6 +354,11 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
     for plugin_state in state.report.plugins:
         if plugin_state.status == "pending_setup":
             _register_setup_tool(mcp, state, plugin_state.manifest.name)
+        elif plugin_state.status == "ok":
+            # Mount the plugin as a downstream MCP server. Failures are
+            # isolated so one broken plugin cannot hide healthy siblings
+            # from the client — the error surfaces via status downgrade.
+            _mount_plugin(mcp, plugin_state)
 
     # Skills and agents as read-only tools.
     for skill in state.skills:
@@ -358,6 +367,58 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
         _register_agent_tool(mcp, agent, state)
 
     return mcp
+
+
+def _plugin_mount_config(plugin_state) -> dict:  # type: ignore[no-untyped-def]
+    """Build the ``create_proxy`` config dict for one plugin.
+
+    Kept pure so tests can assert on the exact command/args without
+    touching FastMCP or spawning a subprocess. Current policy: use the
+    router's own Python interpreter and invoke ``[runtime].entry`` as a
+    script. Venv management, ``deps`` install and ``python`` version
+    matching are deferred — documented in docs/framework-deferrals.md.
+    """
+    manifest = plugin_state.manifest
+    runtime = manifest.runtime or {}
+    entry = runtime.get("entry")
+    if not entry or not isinstance(entry, str):
+        raise ValueError(
+            f"{manifest.name}: [runtime].entry is required to mount"
+        )
+    entry_path = (manifest.path / entry).resolve()
+    if not entry_path.is_file():
+        raise FileNotFoundError(
+            f"{manifest.name}: [runtime].entry '{entry}' not found under {manifest.path}"
+        )
+    return {
+        "mcpServers": {
+            "default": {
+                "command": sys.executable,
+                "args": [str(entry_path)],
+            }
+        }
+    }
+
+
+def _mount_plugin(mcp, plugin_state) -> None:  # type: ignore[no-untyped-def]
+    """Mount one plugin as a downstream MCP server under its own namespace.
+
+    On any failure (missing entry, proxy creation, mount registration)
+    downgrade the plugin status to ``error`` and record the cause on the
+    :class:`PluginState`. The router keeps serving; `router_status()`
+    shows the failure so the operator can react.
+    """
+    name = plugin_state.manifest.name
+    try:
+        config = _plugin_mount_config(plugin_state)
+        from fastmcp.server import create_proxy  # lazy import
+
+        mcp.mount(create_proxy(config), namespace=name)
+        _log.info("mounted plugin '%s' (namespace=%s)", name, name)
+    except Exception as exc:
+        plugin_state.status = "error"
+        plugin_state.error = f"{type(exc).__name__}: {exc}"
+        _log.warning("plugin '%s' mount failed: %s", name, plugin_state.error)
 
 
 def _setup_payload(state: "RouterState", plugin_name: str) -> dict:

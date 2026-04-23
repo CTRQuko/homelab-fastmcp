@@ -7,6 +7,7 @@ is skipped.
 from __future__ import annotations
 
 import dataclasses
+import sys
 import textwrap
 from pathlib import Path
 
@@ -598,6 +599,162 @@ def test_setup_tool_audits_on_error(tmp_path, monkeypatch):
     assert len(captured) == 1
     assert captured[0]["status"] == "error:RuntimeError"
     assert captured[0]["plugin"] == "needs"
+
+
+# ---------------------------------------------------------------------------
+# Fase 6b — plugin mount (subprocess via create_proxy)
+# ---------------------------------------------------------------------------
+
+
+def _mk_mountable_plugin(cfg: router_mod.RouterConfig, name: str) -> None:
+    """Drop a plugin.toml with a [runtime].entry + the entry file itself."""
+    _mk_plugin(
+        cfg.plugin_dir,
+        name,
+        f"""
+        [plugin]
+        name = "{name}"
+        version = "1.0.0"
+
+        [runtime]
+        entry = "server.py"
+
+        [security]
+        """,
+    )
+    (cfg.plugin_dir / name / "server.py").write_text(
+        "# placeholder entry\n", encoding="utf-8"
+    )
+
+
+def test_plugin_mount_config_builds_expected_payload(tmp_path):
+    """The proxy config must point at this interpreter + the resolved
+    entry path. No venv manager, no deps install — the simple case is
+    'the plugin brings its own environment'."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_mountable_plugin(cfg, "p1")
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "p1")
+
+    payload = router_mod._plugin_mount_config(ps)
+
+    server = payload["mcpServers"]["default"]
+    assert server["command"] == sys.executable  # noqa: F821 (sys imported below)
+    assert len(server["args"]) == 1
+    arg_path = Path(server["args"][0])
+    assert arg_path.is_file()
+    assert arg_path.name == "server.py"
+
+
+def test_plugin_mount_config_missing_entry_raises(tmp_path):
+    cfg = _tmp_cfg(tmp_path)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "noentry",
+        """
+        [plugin]
+        name = "noentry"
+        version = "1.0.0"
+
+        [security]
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "noentry")
+
+    with pytest.raises(ValueError, match="entry"):
+        router_mod._plugin_mount_config(ps)
+
+
+def test_plugin_mount_config_missing_entry_file_raises(tmp_path):
+    cfg = _tmp_cfg(tmp_path)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "ghost",
+        """
+        [plugin]
+        name = "ghost"
+        version = "1.0.0"
+
+        [runtime]
+        entry = "does-not-exist.py"
+
+        [security]
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "ghost")
+
+    with pytest.raises(FileNotFoundError, match="does-not-exist.py"):
+        router_mod._plugin_mount_config(ps)
+
+
+def test_mount_plugin_downgrades_to_error_on_failure(tmp_path):
+    """A broken plugin must not propagate — just flip to ``error`` so
+    sibling plugins and the router itself keep working."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_plugin(
+        cfg.plugin_dir,
+        "broken",
+        """
+        [plugin]
+        name = "broken"
+        version = "1.0.0"
+
+        [runtime]
+        entry = "nonexistent.py"
+
+        [security]
+        """,
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "broken")
+    assert ps.status == "ok"  # requires are empty -> passes gate
+
+    sentinel = object()
+    router_mod._mount_plugin(sentinel, ps)  # type: ignore[arg-type]
+
+    assert ps.status == "error"
+    assert ps.error is not None and "nonexistent.py" in ps.error
+
+
+def test_mount_plugin_calls_create_proxy_and_mount(tmp_path, monkeypatch):
+    """Happy path: the helper passes the resolved config to create_proxy
+    and registers the result under the plugin's namespace."""
+    cfg = _tmp_cfg(tmp_path)
+    _mk_mountable_plugin(cfg, "happy")
+    state = router_mod.RouterState.bootstrap(cfg)
+    ps = next(p for p in state.report.plugins if p.manifest.name == "happy")
+
+    proxy_sentinel = object()
+    create_calls: list[dict] = []
+    mount_calls: list[dict] = []
+
+    def _fake_create_proxy(config):  # type: ignore[no-untyped-def]
+        create_calls.append(config)
+        return proxy_sentinel
+
+    class _MountRecorder:
+        def mount(self, server, namespace):  # type: ignore[no-untyped-def]
+            mount_calls.append({"server": server, "namespace": namespace})
+
+    import sys as _sys
+
+    fake_fastmcp = type(_sys)("fastmcp")
+    fake_fastmcp.server = type(_sys)("fastmcp.server")
+    fake_fastmcp.server.create_proxy = _fake_create_proxy
+    monkeypatch.setitem(_sys.modules, "fastmcp", fake_fastmcp)
+    monkeypatch.setitem(_sys.modules, "fastmcp.server", fake_fastmcp.server)
+
+    recorder = _MountRecorder()
+    router_mod._mount_plugin(recorder, ps)
+
+    assert ps.status == "ok"  # no downgrade
+    assert len(create_calls) == 1
+    assert create_calls[0]["mcpServers"]["default"]["command"]
+    assert len(mount_calls) == 1
+    assert mount_calls[0]["namespace"] == "happy"
+    assert mount_calls[0]["server"] is proxy_sentinel
 
 
 def test_setup_tool_skips_audit_when_disabled(tmp_path, monkeypatch):
