@@ -1,8 +1,8 @@
 """Mimir — framework entry point.
 
 The router loads core modules, declarative inventory, and any plugins
-sitting under ``plugins/``. Once a client (Claude Desktop, an agent in
-the loop, etc.) connects over stdio, Mimir exposes:
+sitting under ``plugins/``. Once an MCP client connects over stdio,
+Mimir exposes:
 
 - ``router_*`` meta-tools so the LLM can guide the user through
   onboarding (add hosts/services/credentials, see what is missing).

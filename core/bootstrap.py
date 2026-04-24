@@ -10,7 +10,7 @@ structured payload (not shell stdout).
 
 Credential writes are intentionally constrained:
 
-- Values go to ``<homelab_dir>/.config/secrets/router_vault.md``
+- Values go to ``<MIMIR_HOME>/secrets/router_vault.md``
 - The credential_ref must match at least one plugin's declared pattern,
   otherwise the write is rejected to avoid the user dumping arbitrary
   secrets into the file.

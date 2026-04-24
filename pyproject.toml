@@ -22,11 +22,15 @@ classifiers = [
 
 dependencies = [
   "fastmcp>=3.0.0",
+  "pyyaml>=6.0",
+  # The four below are still needed because tests/ exercises the
+  # legacy server.py + native_tools/ which use them. Once Fase 8
+  # cleanup deletes those, these deps move to an optional ``legacy``
+  # extra (or get dropped entirely if no consumer remains).
   "requests>=2.31.0",
   "pygithub>=2.3.0",
   "paramiko>=4.0.0",
   "pyserial>=3.5",
-  "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -40,21 +44,28 @@ dev = [
 ]
 
 [project.scripts]
-homelab-fastmcp = "server:main"
+mimir = "router:main"
+
+[project.urls]
+Homepage = "https://github.com/CTRQuko/mimir-mcp"
+Repository = "https://github.com/CTRQuko/mimir-mcp"
+Issues = "https://github.com/CTRQuko/mimir-mcp/issues"
+Changelog = "https://github.com/CTRQuko/mimir-mcp/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-# `server` es un módulo single-file (server.py), no un paquete.
-# Para que el entry point `homelab-fastmcp = "server:main"` funcione vía
-# `uv run homelab-fastmcp`, debe declararse como py-modules.
+# router.py is the single-file entry point — declared as a top-level
+# module so `mimir = "router:main"` resolves after install. server.py
+# / server.legacy.py stay alongside until the legacy cleanup phase
+# but are no longer the documented entry point.
 [tool.setuptools]
-py-modules = ["server"]
+py-modules = ["router", "server"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["native_tools*", "core*"]
+include = ["core*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

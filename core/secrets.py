@@ -112,7 +112,7 @@ def _from_env(key: str) -> str | None:
 
 
 def _from_md_files(key: str) -> str | None:
-    """Scan ``<HOMELAB_DIR>/.config/secrets/*.md`` for a ``KEY=value`` line.
+    """Scan ``<MIMIR_HOME>/secrets/*.md`` for a ``KEY=value`` line.
 
     The key must sit at column 0 (no leading whitespace) to avoid false
     positives from indented examples in fenced code blocks, markdown tables,

@@ -72,10 +72,13 @@ credential refs, declared host requirements), see
 - **`profiles/<name>.yaml`** — explicit allowlist of plugins for that
   profile. The default profile loads no plugins; create your own to
   activate them.
-- **`<HOMELAB_DIR>/.config/secrets/*.md`** — optional vault file with
-  `KEY=value` lines. The `HOMELAB_DIR` env var (despite the name) is
-  the standard configurable root. Set it to wherever you want Mimir
-  to look for secrets.
+- **`<MIMIR_HOME>/secrets/*.md`** — optional vault file with
+  `KEY=value` lines. `MIMIR_HOME` is the env var that points Mimir at
+  its config root; default is `%APPDATA%/mimir` on Windows or
+  `$XDG_CONFIG_HOME/mimir` (typically `~/.config/mimir`) elsewhere.
+  The legacy name `HOMELAB_DIR` is still accepted with a
+  deprecation warning so installs migrating from earlier prototypes
+  don't break.
 
 See [`docs/inventory-schema.md`](inventory-schema.md) for the YAML
 shapes and [`docs/security-model.md`](security-model.md) for how

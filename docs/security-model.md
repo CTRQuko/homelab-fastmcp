@@ -43,7 +43,7 @@ by plugins. They are requested through
 1. Verifies the plugin's manifest declares a `credential_refs` pattern
    matching `ref`.
 2. Looks up the value in this order: env var → vault file
-   (`$HOMELAB_DIR/.config/secrets/router_vault.md`) → miss.
+   (`$MIMIR_HOME/secrets/router_vault.md`) → miss.
 3. Records the access in audit (hash of ref only).
 
 Writes go through `router_add_credential`, which:
@@ -65,7 +65,7 @@ the in-process `get_credential` check does not reach them — they read env
 directly. The router therefore *builds* each subprocess's env explicitly
 (`router._plugin_subprocess_env`):
 
-- Ordinary system vars (`PATH`, `APPDATA`, `HOME`, `PYTHON*`, `HOMELAB_DIR`,
+- Ordinary system vars (`PATH`, `APPDATA`, `HOME`, `PYTHON*`, `MIMIR_HOME`,
   etc.) pass through so the child interpreter can start.
 - Credential-shaped vars (uppercase + underscore, length ≥ 3) only
   propagate when they match **this plugin's** `credential_refs` patterns,
@@ -164,7 +164,7 @@ most MCP clients this means the raw credential will sit in conversation
 history.
 
 If that is unacceptable, add credentials out-of-band: either write them
-directly into `$HOMELAB_DIR/.config/secrets/router_vault.md` (same `ref =
+directly into `$MIMIR_HOME/secrets/router_vault.md` (same `ref =
 value` format, one per line, mode `0o600`) or set the matching environment
 variable before starting the router. The router's `get_credential()` lookup
 order is env var → vault file, so either path works without the LLM ever

@@ -71,7 +71,7 @@ through `core.bootstrap`:
 - `router_add_host(name, type, address, port?, credential_ref?, auth_method?, tags?)`
 - `router_add_service(name, type, host_ref, port?, credential_ref?, auth_method?)`
 - `router_add_credential(ref, value)` — credential goes to the scoped vault
-  (`$HOMELAB_DIR/.config/secrets/router_vault.md`), never to the YAML.
+  (`$MIMIR_HOME/secrets/router_vault.md`), never to the YAML.
 - Each write triggers `state.refresh()` so subsequent `router_status()`
   reflects the new state — the LLM does not need to restart anything.
 
