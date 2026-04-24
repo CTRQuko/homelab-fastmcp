@@ -1,164 +1,122 @@
-# Arquitectura
+# Mimir architecture
 
-## Visión general
-
-`homelab-fastmcp` es un **aggregator MCP** que expone una única interfaz stdio
-a clientes MCP (Claude Desktop, OpenCode, etc.) y enruta cada tool al
-downstream correspondiente mediante prefijos de namespace.
+A single-process Python MCP router built on FastMCP 3.x. The shape:
 
 ```
-┌────────────────┐  stdio  ┌──────────────────────────┐
-│ MCP Client     │ ◄─────► │ homelab-fastmcp          │
-│ (Claude/Code)  │         │ (FastMCP Aggregator)     │
-└────────────────┘         └─────────────┬────────────┘
-                                         │
-           ┌─────────────────────────────┼─────────────────────────────┐
-           │                             │                             │
-      ┌────▼────┐   ┌─────┐  ┌──────┐  ┌▼────┐  ┌────┐  ┌────┐  ┌────┐
-      │ windows │   │linux│  │proxmo│  │unifi│  │uart│  │gpon│  │...native
-      │  _*     │   │ _*  │  │x _*  │  │ _*  │  │_*  │  │_*  │  │ tools
-      └─────────┘   └─────┘  └──────┘  └─────┘  └────┘  └────┘  └────┘
-      Windows       Linux    Proxmox   UniFi    UART    GPON    tailscale_
-      (subproc)     (ssh)    (api)     (api)    (serial)(ssh)   github_
-                                                                uart_detectar_
+┌─────────────┐  stdio  ┌────────────────────────────┐
+│ MCP client  │ ◄─────► │ router.py (Mimir)          │
+│ (Claude     │         │  ├── core/                 │
+│  Desktop,   │         │  │   secrets, audit,       │
+│  agent…)    │         │  │   inventory, memory,    │
+└─────────────┘         │  │   loader, profile,      │
+                        │  │   skills                │
+                        │  ├── meta-tools (router_*) │
+                        │  ├── tool middleware       │
+                        │  └── mounted plugins       │
+                        │      via create_proxy      │
+                        └────────────────────────────┘
+                              ▲   ▲   ▲   ▲
+                              │   │   │   │   subprocess
+                              │   │   │   │   spawned per
+                              │   │   │   │   plugin
+                              ▼   ▼   ▼   ▼
+                        ┌────┐┌────┐┌────┐┌────┐
+                        │ p1 ││ p2 ││ p3 ││ pN │  plugins
+                        └────┘└────┘└────┘└────┘
 ```
 
-## Componentes
+## Pieces
 
-### `server.py` (entrypoint)
+### `router.py`
 
-- Carga `.env` vía `_parse_env_value()` (helper extraído, testeable)
-- Determina `HOMELAB_DIR` y plataforma (`_ON_WINDOWS`)
-- Inyecta defaults para `UNIFI_*` y `GPON_*`
-- Monta 7 proxies con `create_proxy()` + `mcp.mount(namespace=...)`
-- Registra 12 tools nativas con `@mcp.tool()`
-- `main()` arranca `mcp.run(transport="stdio")` con manejo de `KeyboardInterrupt`
+Entry point. On startup it builds a `RouterState` (config + inventory
++ discovered plugins), then assembles a `FastMCP` instance with:
 
-### `native_tools/secrets.py`
+- **Meta-tools** prefixed `router_*` and `setup_<plugin>()` for the
+  LLM to drive onboarding.
+- **Mounted plugins** as FastMCP subservers via `create_proxy`, each
+  under its own namespace.
+- **Skills/agents** discovered as `.md` files with frontmatter,
+  exposed as `skill_<name>` / `agent_<name>`.
+- **Tool policy middleware** that filters `[tools].whitelist/blacklist`
+  declarations on `on_list_tools` and `on_call_tool`.
 
-Loader con prioridad fija:
+### `core/`
 
-1. `os.environ[KEY]`
-2. `$HOMELAB_DIR/.config/secrets/*.md` — líneas `KEY=value`
-3. `$PROJECT_ROOT/.env` — mismo formato
+The infra-agnostic building blocks. None of these expose tools
+directly — they're consumed by the router and by plugins indirectly:
 
-API:
-- `load(key) -> str` — lanza `RuntimeError` si no encuentra
-- `load_optional(key, default="") -> str` — no lanza
-- `mask(value, visible=4) -> str` — para logging seguro
+- `secrets` — scoped credential vault. `get_credential(ref, ctx)`
+  with manifest-declared allowlist.
+- `audit` — JSONL append-only log of every tool call.
+- `inventory` — typed `Host` / `Service` reader for `inventory/*.yaml`.
+- `memory` — adapter pattern; `noop` and `sqlite` implemented,
+  `engram` / `claude_mem` deferred.
+- `loader` — manifest parser, requirement evaluation, reconciliation
+  diff, quarantine for malformed `plugin.toml`.
+- `profile` — reads `profiles/<name>.yaml:enabled_plugins` allowlist.
+- `skills` — discovers `.md` files with YAML frontmatter.
 
-### `native_tools/tailscale.py`
+### Plugins (under `plugins/`)
 
-Cliente REST a `api.tailscale.com/api/v2`. 6 endpoints:
-`list_devices`, `get_device`, `get_acls`, `get_dns`,
-`authorize_device`, `delete_device`.
+Each plugin is a directory with at least a `plugin.toml`. The router
+spawns each plugin as a subprocess via FastMCP's `create_proxy` and
+prefixes its tools with the plugin's namespace. The subprocess's env
+is built explicitly: ordinary system vars pass through; credential-
+shaped vars only propagate when the plugin's manifest claims them
+(see `docs/security-model.md` for cross-plugin scoping).
 
-- Validación: `^[a-zA-Z0-9_-]{1,64}$` para `device_id` (defensa DoS)
-- Sanitización de errores: 9 patrones (`tskey-*`, `bearer`, `token=`, …)
-  → sustituyen excepciones con mensaje genérico
+Plugins are independent: each one can run standalone as an MCP server.
+Mimir aggregates them but does not own them.
 
-### `native_tools/github.py`
+### Inventory (under `inventory/`)
 
-Wrapper sobre PyGithub. 5 funciones:
-`list_repos`, `get_repo_info`, `get_issue`, `create_issue`, `list_prs`.
+The operator's declarative description of their infrastructure.
+`hosts.yaml` lists hosts (type, address, auth method, credential
+ref, tags); `services.yaml` lists services and ties them to hosts.
+Plugins ask the router *"give me hosts of type X"* — they never read
+this directory directly.
 
-- Validación: `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` — rechaza nombres GitHub-inválidos
-- Degradación: si no hay `GITHUB_TOKEN`, emite `UserWarning` y usa cliente anonymous
+### Profiles (under `profiles/`)
 
-### `native_tools/uart_detect.py`
+`<name>.yaml:enabled_plugins` is a strict allowlist. The default
+profile loads no plugins; the operator creates additional profiles
+to enable the plugins they want.
 
-Detector de dispositivos en puertos serie. Protocolo:
+## The startup sequence
 
-1. Verifica que el puerto existe (fast-fail <500ms)
-2. Abre `serial.Serial` y lee boot greeting (1.5s)
-3. Detecta U-Boot en greeting → early return
-4. Si no hay U-Boot, ejecuta 8 comandos de identificación:
-   `uname -a`, `hostname`, `cat /proc/version`, `fw_printenv version`, …
-5. `_settle` proporcional a `timeout_cmd` (defensa contra tiempos fijos)
-6. Devuelve dict con `sistema`, `kernel`, `hostname`, `dispositivo`, `notas`
+1. Parse `config/router.toml` → `RouterConfig`.
+2. Load inventory from `inventory/*.yaml` → `Inventory`.
+3. Discover plugins under `plugins/`:
+   - Parse each `plugin.toml`. Malformed → quarantine.
+   - Evaluate requirements against the inventory → set status
+     (`ok` / `pending_setup` / `disabled` / `error`).
+4. Apply the profile gate: drop plugins not in `enabled_plugins`.
+5. Bootstrap the FastMCP instance:
+   - Register `router_*` and `setup_<plugin>()` meta-tools.
+   - Mount each `ok` plugin via `create_proxy` with scoped env.
+   - Discover skills/agents and register one tool per file.
+   - Attach the tool policy middleware.
+6. Serve over stdio (or print and exit if `--dry-run`).
 
-## Decisiones de diseño
+## Where the contract lives
 
-### ¿Por qué FastMCP y no mcp-router Go?
+- **`plugin.toml`** — the schema is in
+  [`docs/plugin-contract.md`](plugin-contract.md). The example plugin
+  in [`examples/echo-plugin/`](../examples/echo-plugin/) is the
+  living minimal reference.
+- **`inventory/*.yaml`** — schema in
+  [`docs/inventory-schema.md`](inventory-schema.md).
+- **Naming** — conventions in
+  [`docs/naming-guide.md`](naming-guide.md).
+- **Security layers** — full breakdown in
+  [`docs/security-model.md`](security-model.md).
 
-- Reutilizamos los downstreams MCP ya existentes (Python + uvx)
-- Menos superficie de deploy (un solo runtime Python)
-- FastMCP 3.x soporta `create_proxy` + namespacing out-of-the-box
+## Out of scope (today)
 
-### ¿Por qué no cargar `downstream/servers.json`?
-
-Experimento abandonado. Los configs están hardcoded en `server.py` porque:
-- Permiten lógica condicional (`_ON_WINDOWS`)
-- Permiten inyección dinámica de `env` desde `os.environ`
-- Un JSON estático no puede expresar ambas cosas sin motor de templates
-
-### ¿Por qué tools nativas en Python en vez de downstream?
-
-Para 3 casos: UART, Tailscale, GitHub. Razones:
-- **UART**: requiere acceso directo a pyserial en el proceso — no es operación de red
-- **Tailscale**: solo 6 endpoints REST, un downstream es overkill
-- **GitHub**: PyGithub ya hace el trabajo, no aporta un proceso extra
-
-### Prefijos de namespace (`windows_*`, `uart_*`, …)
-
-Decisión: `mcp.mount(proxy, namespace="unifi")` hace que todas las tools del
-downstream aparezcan como `unifi_*` al cliente MCP. Esto evita colisiones
-y permite al LLM elegir el downstream correcto por prefijo.
-
-### Logging a stderr
-
-`stdout` está reservado para el protocolo MCP (JSON-RPC). Cualquier `print()`
-rompería la comunicación. Por eso `logging.basicConfig(stream=sys.stderr)`
-y nunca usamos `print()` en el runtime.
-
-## Flujo de arranque
-
-```
-1. Python importa server.py
-2. logging.basicConfig() → stderr
-3. _parse_env_value + lectura .env → pobla os.environ (respeta existentes)
-4. Defaults UNIFI_* / GPON_*
-5. Detecta _ON_WINDOWS
-6. Crea FastMCP("Homelab Aggregator", instructions=...)
-7. Monta 5-7 proxies (windows/docker solo Windows)
-8. Importa native_tools.* y registra 12 tools nativas
-9. main() → mcp.run(transport="stdio")
-```
-
-## Entry point y deployment
-
-`pyproject.toml` declara:
-```toml
-[project.scripts]
-homelab-fastmcp = "server:main"
-
-[tool.setuptools]
-py-modules = ["server"]
-```
-
-El `py-modules = ["server"]` es **necesario** porque `server.py` es un módulo
-single-file, no un paquete. Sin él, setuptools no empaqueta `server` y
-`uv run homelab-fastmcp` falla con `ModuleNotFoundError`.
-
-Los clientes MCP (OpenCode, Claude Desktop) invocan así:
-
-```
-uv run --directory <path-al-proyecto> homelab-fastmcp
-```
-
-`--directory` hace que uv use el venv + entry points del proyecto,
-independientemente del cwd desde donde se invoque el cliente MCP.
-
-El server queda escuchando stdio indefinidamente; el cliente MCP gestiona
-el ciclo de vida del subproceso (lanzarlo, enviar JSON-RPC, terminarlo).
-`main()` captura `KeyboardInterrupt` y cualquier excepción con logs
-estructurados a stderr.
-
-## Tests
-
-- `test_integration.py` arranca el servidor como subprocess real vía `Client(SERVER_PATH)`
-- `test_resilience.py` verifica comportamiento ante fallos de downstream
-- `test_adaptive.py` valida gating por plataforma
-- `test_security.py` / `test_security_extended.py` cubren validación de inputs
-- `test_critical.py` / `test_coverage_gaps.py` cubren contratos y regresiones
-- `tests/manual/` excluido del pytest normal (`norecursedirs=["manual"]`)
+- Process sandbox beyond what the OS provides. Layer 5 tier 2
+  (filesystem / network / exec interceptors) is deferred until a
+  real sandbox lands.
+- Web UI or REST API. Stdio + LLM are the supported control planes.
+- Plugin venv management (`[runtime].venv = "auto"` + `deps = [...]`
+  install). Plugins bring their own environment for now.

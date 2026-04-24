@@ -160,8 +160,8 @@ When an LLM calls `router_add_credential(ref, value)`, the `value` argument
 is serialised by the MCP client before reaching the router. The router's
 audit log never writes the value (only a hash of the `ref`), but any
 client-side transcript or tool-call log records the argument as-is. For
-Claude Desktop and similar clients this means the raw credential will sit
-in conversation history.
+most MCP clients this means the raw credential will sit in conversation
+history.
 
 If that is unacceptable, add credentials out-of-band: either write them
 directly into `$HOMELAB_DIR/.config/secrets/router_vault.md` (same `ref =

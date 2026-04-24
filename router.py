@@ -201,32 +201,32 @@ def format_report(state: RouterState) -> str:
     lines: list[str] = []
     lines.append(f"[mimir] router — profile: {cfg.profile}")
     lines.append(
-        "[router] Core: inventory, secrets, audit, memory(" + state.memory.name + ")"
+        "[mimir] Core: inventory, secrets, audit, memory(" + state.memory.name + ")"
     )
     summary = state.inventory.summary()
     lines.append(
-        f"[router] Inventory: {summary['hosts_total']} hosts, "
+        f"[mimir] Inventory: {summary['hosts_total']} hosts, "
         f"{summary['services_total']} services"
     )
-    lines.append(f"[router] Plugins discovered: {len(state.report.plugins)}")
+    lines.append(f"[mimir] Plugins discovered: {len(state.report.plugins)}")
     for p in state.report.plugins:
         lines.append(
-            f"[router]   - {p.manifest.name} v{p.manifest.version}: {p.status}"
+            f"[mimir]   - {p.manifest.name} v{p.manifest.version}: {p.status}"
         )
         for req in p.missing:
             detail = ", ".join(f"{k}={v}" for k, v in req.detail.items())
             prompt = f" — {req.prompt}" if req.prompt else ""
-            lines.append(f"[router]     Next ({req.kind}): {detail}{prompt}")
+            lines.append(f"[mimir]     Next ({req.kind}): {detail}{prompt}")
     if state.report.quarantined:
-        lines.append(f"[router] Quarantined: {len(state.report.quarantined)}")
+        lines.append(f"[mimir] Quarantined: {len(state.report.quarantined)}")
         for q in state.report.quarantined:
-            lines.append(f"[router]   - {q.path.name}: {q.error}")
+            lines.append(f"[mimir]   - {q.path.name}: {q.error}")
     if state.report.added:
-        lines.append(f"[router] Added since last run: {', '.join(state.report.added)}")
+        lines.append(f"[mimir] Added since last run: {', '.join(state.report.added)}")
     if state.report.removed:
-        lines.append(f"[router] Removed since last run: {', '.join(state.report.removed)}")
+        lines.append(f"[mimir] Removed since last run: {', '.join(state.report.removed)}")
     lines.append(
-        f"[router] Skills: {len(state.skills)}  Agents: {len(state.agents)}"
+        f"[mimir] Skills: {len(state.skills)}  Agents: {len(state.agents)}"
     )
     return "\n".join(lines)
 
@@ -787,12 +787,12 @@ def run(dry_run: bool = False) -> int:
     try:
         cfg = RouterConfig.load()
     except RuntimeError as exc:
-        print(f"[router] ERROR: {exc}", file=sys.stderr)
+        print(f"[mimir] ERROR: {exc}", file=sys.stderr)
         return 2
     try:
         state = RouterState.bootstrap(cfg)
     except InventoryError as exc:
-        print(f"[router] ERROR: {exc}", file=sys.stderr)
+        print(f"[mimir] ERROR: {exc}", file=sys.stderr)
         return 2
     print(format_report(state))
     if dry_run:
@@ -801,14 +801,14 @@ def run(dry_run: bool = False) -> int:
     try:
         mcp = build_mcp(state)
     except ImportError as exc:
-        print(f"[router] ERROR: fastmcp not installed: {exc}", file=sys.stderr)
+        print(f"[mimir] ERROR: fastmcp not installed: {exc}", file=sys.stderr)
         return 2
 
-    print("[router] Starting FastMCP server on stdio...", file=sys.stderr)
+    print("[mimir] Starting FastMCP server on stdio...", file=sys.stderr)
     try:
         mcp.run(transport="stdio")
     except KeyboardInterrupt:
-        print("[router] KeyboardInterrupt — shutting down", file=sys.stderr)
+        print("[mimir] KeyboardInterrupt — shutting down", file=sys.stderr)
     return 0
 
 

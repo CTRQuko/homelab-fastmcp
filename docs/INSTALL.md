@@ -1,211 +1,95 @@
-# Instalacion y Configuracion
+# Install Mimir
 
-## Requisitos
+Three install paths depending on what you want.
 
-- Python >= 3.11
-- `uv` (gestor de entornos y dependencias)
-- Git (opcional, para clonar)
+## 1. Run from a checkout (recommended for now)
 
-## Instalacion
-
-### 1. Clonar o copiar el proyecto
-
-**Windows (recomendado):**
-```powershell
-cd C:\homelab\laboratorio
-git clone <repo> homelab-fastmcp
-cd homelab-fastmcp
-```
-
-**Linux / macOS:**
-```bash
-mkdir -p ~/homelab/laboratorio
-cd ~/homelab/laboratorio
-git clone <repo> homelab-fastmcp
-cd homelab-fastmcp
-export HOMELAB_DIR=~/homelab
-```
-
-### 2. Instalar dependencias
+The branch where this code lives is not yet on PyPI. Clone the repo
+and run with `uv`:
 
 ```bash
+git clone https://github.com/CTRQuko/mimir-mcp
+cd mimir-mcp
 uv sync
+uv run python router.py --dry-run
 ```
 
-O si prefieres pip:
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate  # Windows
-pip install -e ".[dev]"
-```
+The dry-run prints what Mimir would expose: inventory, plugins,
+skills/agents. Without configuration it serves only the `router_*`
+meta-tools — that's the empty baseline.
 
-### 3. Configurar secrets
+## 2. Add Mimir to an MCP client
 
-**Windows:**
-```powershell
-New-Item -ItemType Directory -Force -Path "C:\homelab\.config\secrets"
-```
+Once the dry-run looks correct, point your MCP client at `router.py`.
+Same pattern for any client that supports stdio MCP servers.
 
-**Linux / macOS:**
-```bash
-mkdir -p ~/homelab/.config/secrets
-```
+Example (Claude Desktop config — `%APPDATA%\Claude\claude_desktop_config.json`
+on Windows, `~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS):
 
-Crear archivos `.md` con secrets:
-
-```markdown
-# C:\homelab\.config\secrets\tailscale.md (o ~/homelab/.config/secrets/tailscale.md)
-TAILSCALE_API_KEY=tskey-api-XXXXXXXX
-TAILSCALE_TAILNET=tu-email@gmail.com
-```
-
-```markdown
-# C:\homelab\.config\secrets\github-token.md
-GITHUB_TOKEN=ghp_XXXXXXXXXXXXXXXX
-```
-
-### 4. Configurar .env (opcional)
-
-Copiar `.env` y ajustar:
-
-```bash
-# Windows
-HOMELAB_DIR=C:/homelab
-UNIFI_API_TYPE=local
-UNIFI_LOCAL_HOST=192.168.1.12
-UNIFI_LOCAL_PORT=11443
-UNIFI_LOCAL_VERIFY_SSL=false
-
-# Linux / macOS
-HOMELAB_DIR=/home/tuusuario/homelab
-UNIFI_API_TYPE=local
-UNIFI_LOCAL_HOST=192.168.1.12
-UNIFI_LOCAL_PORT=11443
-UNIFI_LOCAL_VERIFY_SSL=false
-```
-
-### 5. Verificar instalacion
-
-```bash
-# Tests (suite completa)
-uv run --extra test pytest tests/ -v          # 95 passed, 2 skipped
-
-# Arranque manual del server (smoke test)
-uv run homelab-fastmcp                         # Ctrl+C para salir
-
-# Test funcional rapido (9 tools contra MCP real)
-uv run python tests/manual/simple_test.py
-```
-
-### 6. Uso como MCP server
-
-El entry point `homelab-fastmcp` (definido en `pyproject.toml`) arranca
-el aggregator en stdio. Los clientes MCP lo invocan así:
-
-**OpenCode** (`~/.config/opencode/opencode.json`):
 ```json
-"mcp": {
-  "homelab-fastmcp": {
-    "command": [
-      "uv", "run", "--directory",
-      "C:\\homelab\\laboratorio\\homelab-fastmcp",
-      "homelab-fastmcp"
-    ],
-    "enabled": true,
-    "type": "local"
+{
+  "mcpServers": {
+    "mimir": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/mimir-mcp",
+        "run",
+        "python",
+        "router.py"
+      ]
+    }
   }
 }
 ```
 
-**Claude Desktop** (`%APPDATA%\Claude\claude_desktop_config.json`):
-```json
-"mcpServers": {
-  "homelab-fastmcp": {
-    "command": "uv",
-    "args": [
-      "run", "--directory",
-      "C:\\homelab\\laboratorio\\homelab-fastmcp",
-      "homelab-fastmcp"
-    ]
-  }
-}
-```
+Restart the client. The first tool you'll see is `router_help` — call
+it from your LLM and it will guide the rest.
 
-Los 3 downstreams se detectan por plataforma:
-- `windows_*` y `docker_*` solo en Windows
-- `linux_*`, `proxmox_*`, `unifi_*`, `uart_*`, `gpon_*` en todas
+## 3. Mount your first plugin
 
-## Configuracion de Downstreams
-
-### Requisitos por plataforma
-
-| Downstream | Windows | Linux | macOS | Notas |
-|-----------|---------|-------|-------|-------|
-| windows | ✅ | ❌ | ❌ | Requiere PowerShell |
-| linux | ✅ | ✅ | ✅ | Requiere hosts SSH configurados |
-| proxmox | ✅ | ✅ | ✅ | Requiere `proxmox_nodes.json` |
-| docker | ✅ | ❌ | ❌ | Requiere Docker Desktop |
-| unifi | ✅ | ✅ | ✅ | Requiere API key |
-| uart | ✅ | ✅ | ✅ | Requiere puertos serie |
-| gpon | ✅ | ✅ | ✅ | Requiere stick GPON en red |
-
-### Estructura de directorios esperada
-
-```
-$HOMELAB_DIR/
-├── mcp-servers/
-│   ├── homelab-mcp/         # Windows, Linux, Proxmox, Docker
-│   ├── mcp-uart-serial/     # UART downstream
-│   └── gpon-mcp/            # GPON downstream
-├── .config/
-│   └── secrets/
-│       ├── tailscale.md
-│       ├── github-token.md
-│       └── ...
-└── proyectos/
-    └── windows/             # Sandbox de Windows MCP
-```
-
-## Solucion de problemas
-
-### "Secret 'X' not found"
-
-Verificar:
-1. Variable de entorno: `echo $env:X` (PowerShell) o `echo $X` (bash)
-2. Archivo en `$HOMELAB_DIR/.config/secrets/*.md`
-3. `.env` en raiz del proyecto
-
-### "401 Unauthorized" en UniFi
-
-Verificar en `.env`:
-```
-UNIFI_API_TYPE=local
-UNIFI_LOCAL_HOST=<ip-del-controller>
-UNIFI_LOCAL_VERIFY_SSL=false
-```
-
-### Proxmox no configurado
-
-El downstream de Proxmox espera un archivo `proxmox_nodes.json` en el directorio del proyecto:
-```json
-[
-  {"alias": "pve", "host": "pve.tudominio.local", "user": "tu-usuario@pam", "token_id": "tu-token-name", "token_secret": "xxxx-xxxx-xxxx-xxxx"}
-]
-```
-
-O configura mediante variables de entorno (menos seguro).
-
-### "Docker no disponible"
-
-Requiere Docker Desktop instalado y ejecutándose en Windows.
-
-### "PyGithub no esta instalado"
+Plugins are MCP servers with a `plugin.toml`. The minimal example
+ships with the framework:
 
 ```bash
-uv add PyGithub
+ln -s "$(pwd)/examples/echo-plugin" plugins/echo
+uv run python router.py --dry-run
 ```
 
-### Windows no aparece en Linux
+For real-world manifests (uv-managed Python packages, uvx, declared
+credential refs, declared host requirements), see
+[`docs/operator-notes/cutover/manifests/`](operator-notes/cutover/manifests/).
 
-Es el comportamiento esperado. `windows_*` y `docker_*` solo se montan en Windows (`sys.platform == "win32"`).
+## Configuration files
+
+- **`config/router.toml`** — framework config (profile, paths to
+  plugin dir / inventory dir / skills dir, memory backend choice).
+  Optional: defaults work if absent.
+- **`inventory/hosts.yaml`** + **`inventory/services.yaml`** — your
+  declarative infrastructure. Templates live next to them as
+  `*.yaml.example`.
+- **`profiles/<name>.yaml`** — explicit allowlist of plugins for that
+  profile. The default profile loads no plugins; create your own to
+  activate them.
+- **`<HOMELAB_DIR>/.config/secrets/*.md`** — optional vault file with
+  `KEY=value` lines. The `HOMELAB_DIR` env var (despite the name) is
+  the standard configurable root. Set it to wherever you want Mimir
+  to look for secrets.
+
+See [`docs/inventory-schema.md`](inventory-schema.md) for the YAML
+shapes and [`docs/security-model.md`](security-model.md) for how
+credentials flow.
+
+## Sanity checks
+
+```bash
+# Tests
+uv run --extra test pytest tests/ -q
+
+# Dry-run shows current state without serving
+uv run python router.py --dry-run
+```
+
+If both pass and the dry-run prints `[mimir] router — profile: …`,
+the install is good.
