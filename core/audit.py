@@ -14,12 +14,31 @@ import time
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_PATH = Path(
-    os.environ.get(
-        "HOMELAB_FASTMCP_AUDIT_LOG",
-        str(Path(__file__).resolve().parent.parent / "config" / "audit.log"),
-    )
-)
+def _resolve_default_audit_path() -> Path:
+    """Pick the audit log path with backward-compat for the old name.
+
+    ``MIMIR_AUDIT_LOG`` is the canonical override from v0.1.0. The
+    ``HOMELAB_FASTMCP_AUDIT_LOG`` name from earlier prototypes is still
+    honoured but emits a DeprecationWarning so operators know to rename.
+    Falls back to ``<framework_root>/config/audit.log`` when neither is
+    set — same default as before.
+    """
+    explicit = os.environ.get("MIMIR_AUDIT_LOG")
+    if explicit:
+        return Path(explicit)
+    legacy = os.environ.get("HOMELAB_FASTMCP_AUDIT_LOG")
+    if legacy:
+        import warnings as _warnings
+        _warnings.warn(
+            "HOMELAB_FASTMCP_AUDIT_LOG is deprecated; rename to MIMIR_AUDIT_LOG",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return Path(legacy)
+    return Path(__file__).resolve().parent.parent / "config" / "audit.log"
+
+
+_DEFAULT_PATH = _resolve_default_audit_path()
 
 _lock = threading.Lock()
 

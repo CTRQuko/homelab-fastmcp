@@ -8,7 +8,9 @@ manifest authorises the reference.
 Resolution order for a credential value:
 
 1. Process environment variable (``os.environ``)
-2. ``<homelab_dir>/.config/secrets/*.md`` files (lines ``KEY=value``)
+2. ``<MIMIR_HOME>/secrets/*.md`` files (lines ``KEY=value``;
+   ``<MIMIR_HOME>/.config/secrets/*.md`` is also scanned for legacy
+   layouts)
 3. ``.env`` at the framework root (fallback)
 
 Values are never logged. :func:`mask` returns a redacted form for logs.
@@ -22,8 +24,61 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_HOMELAB_DIR = os.environ.get("HOMELAB_DIR", "C:/homelab")
-_SECRET_DIRS = [Path(_HOMELAB_DIR) / ".config/secrets"]
+def _platform_default_home() -> Path:
+    """Return the default Mimir home dir when no env var is set.
+
+    Windows → ``%APPDATA%/mimir`` (or ``~/AppData/Roaming/mimir`` if
+    APPDATA is unset). Everything else → ``$XDG_CONFIG_HOME/mimir`` (or
+    ``~/.config/mimir`` when XDG_CONFIG_HOME is unset). Picks platform-
+    standard config locations so a clean install doesn't litter the
+    user's home with framework state.
+    """
+    import sys
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "mimir"
+        return Path.home() / "AppData" / "Roaming" / "mimir"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "mimir"
+    return Path.home() / ".config" / "mimir"
+
+
+def resolve_home() -> Path:
+    """Where Mimir reads vault files and operator-supplied state from.
+
+    Resolution order:
+
+    1. ``MIMIR_HOME`` — the canonical name from v0.1.0 onwards.
+    2. ``HOMELAB_DIR`` — legacy name kept so operators carrying it over
+       from before the rename don't get a silent break. Reading it
+       emits a one-shot DeprecationWarning so they know to migrate.
+    3. Platform default (see :func:`_platform_default_home`).
+    """
+    explicit = os.environ.get("MIMIR_HOME")
+    if explicit:
+        return Path(explicit).expanduser()
+    legacy = os.environ.get("HOMELAB_DIR")
+    if legacy:
+        warnings.warn(
+            "HOMELAB_DIR is deprecated; rename to MIMIR_HOME",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return Path(legacy).expanduser()
+    return _platform_default_home()
+
+
+# Computed lazily so tests can monkeypatch _SECRET_DIRS without having
+# to reach inside resolve_home. The default value matches the canonical
+# layout: <home>/.config/secrets/ on legacy installs, <home>/secrets/
+# under the platform default.
+_HOMELAB_DIR = str(resolve_home())  # kept as legacy alias for backward-compat
+_SECRET_DIRS = [
+    resolve_home() / "secrets",
+    resolve_home() / ".config" / "secrets",  # legacy layout (homelab-style)
+]
 _PROJECT_ENV = Path(__file__).resolve().parent.parent / ".env"
 
 

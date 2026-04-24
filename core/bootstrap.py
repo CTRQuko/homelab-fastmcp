@@ -186,9 +186,12 @@ def router_add_credential(
             "allowed_patterns": allowed,
         }
 
-    vault_dir = vault_dir or Path(
-        os.environ.get("HOMELAB_DIR", "C:/homelab")
-    ) / ".config" / "secrets"
+    if vault_dir is None:
+        # Use the same resolution order the secrets module uses so the
+        # write path lands exactly where the read path looks.
+        from core.secrets import resolve_home
+
+        vault_dir = resolve_home() / "secrets"
     vault_dir.mkdir(parents=True, exist_ok=True)
     vault_file = vault_dir / _VAULT_FILENAME
 

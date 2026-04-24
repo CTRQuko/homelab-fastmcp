@@ -1,11 +1,24 @@
 [project]
 name = "mimir-mcp"
-version = "0.3.2"
+version = "0.1.0"
 description = "Mimir — declarative MCP router with LLM-guided onboarding, scoped plugins and a layered security model."
 authors = [
   { name = "Jandro" }
 ]
+license = { text = "MIT" }
+readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["mcp", "model-context-protocol", "router", "aggregator", "fastmcp", "plugins"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 
 dependencies = [
   "fastmcp>=3.0.0",
