@@ -191,6 +191,7 @@ def _tmp_cfg(tmp_path: Path, profile_yaml: str | None = None) -> router_mod.Rout
         memory_config={},
         strict_manifest=True,
         audit_enabled=False,
+        allow_plugin_install=False,
         state_path=tmp_path / "config" / ".last_state.json",
         profile_path=profile_path,
     )
@@ -512,19 +513,35 @@ class _FakeMCP:
     """Minimal stand-in for FastMCP that records registered tool callables.
 
     FastMCP's public surface is not stable enough to invoke a registered
-    tool inline. The setup_ tool is a plain Python closure; capturing it
-    via the decorator is enough to exercise its audit behavior.
+    tool inline. Accepts both decorator shapes the router uses —
+    ``@mcp.tool`` bare and ``mcp.tool(name=...)`` factory — and also
+    :meth:`mount` / :meth:`add_middleware` so the richer tests that
+    drive the full :func:`build_mcp` flow can reuse it.
     """
 
     def __init__(self) -> None:
         self.tools: dict[str, object] = {}
+        self.mounts: list[tuple] = []
+        self.middlewares: list[object] = []
 
-    def tool(self, *, name: str):  # type: ignore[no-untyped-def]
+    def tool(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if args and callable(args[0]):
+            fn = args[0]
+            self.tools[fn.__name__] = fn
+            return fn
+        name = kwargs.get("name")
+
         def deco(fn):  # type: ignore[no-untyped-def]
-            self.tools[name] = fn
+            self.tools[name or fn.__name__] = fn
             return fn
 
         return deco
+
+    def mount(self, server, namespace):  # type: ignore[no-untyped-def]
+        self.mounts.append((server, namespace))
+
+    def add_middleware(self, mw):  # type: ignore[no-untyped-def]
+        self.middlewares.append(mw)
 
 
 def _prepare_pending_state(
@@ -1334,3 +1351,131 @@ def test_build_mcp_no_middleware_when_all_plugins_open(tmp_path, monkeypatch):
     mcp = router_mod.build_mcp(state)
 
     assert mcp.middlewares == []
+
+
+# ---------------------------------------------------------------------------
+# Fase 7e — plugin lifecycle meta-tools (wiring, audit, config gating)
+# ---------------------------------------------------------------------------
+
+
+def _install_mgmt_tools(tmp_path, *, audit_enabled=True, allow_install=False):
+    """Build a live RouterState and return a _FakeMCP with the plugin
+    lifecycle tools registered. Tests can invoke them from ``mcp.tools``."""
+    cfg = _tmp_cfg(tmp_path)
+    cfg = dataclasses.replace(
+        cfg, audit_enabled=audit_enabled, allow_plugin_install=allow_install
+    )
+    state = router_mod.RouterState.bootstrap(cfg)
+    mcp = _FakeMCP()
+    # Re-invoke the bit of build_mcp that registers router_* tools by
+    # calling build_mcp with a stub fastmcp. Simpler: call the internals
+    # directly — we only need the tools attached to our _FakeMCP.
+    # To keep this lightweight we monkeypatch FastMCP to _FakeMCP and
+    # call build_mcp.
+    import sys as _sys
+    fake_fastmcp = type(_sys)("fastmcp")
+    fake_fastmcp.FastMCP = lambda *a, **kw: mcp  # type: ignore[assignment]
+    fake_server = type(_sys)("fastmcp.server")
+    fake_server.create_proxy = lambda cfg: object()
+    import fastmcp.server.middleware as _real_mw
+    fake_mw = type(_sys)("fastmcp.server.middleware")
+    fake_mw.Middleware = _real_mw.Middleware
+    fake_server.middleware = fake_mw
+    import pytest as _pt
+    with _pt.MonkeyPatch.context() as mp:
+        mp.setitem(_sys.modules, "fastmcp", fake_fastmcp)
+        mp.setitem(_sys.modules, "fastmcp.server", fake_server)
+        mp.setitem(_sys.modules, "fastmcp.server.middleware", fake_mw)
+        router_mod.build_mcp(state)
+    return state, mcp
+
+
+def test_install_plugin_tool_strict_returns_instruction(tmp_path):
+    """The LLM should get a ``manual_instruction`` payload when the
+    operator hasn't opted in — nothing touches disk."""
+    state, mcp = _install_mgmt_tools(tmp_path, allow_install=False)
+    fn = mcp.tools["router_install_plugin"]
+
+    result = fn(source="github:acme/foo-mcp")
+
+    assert result["executed"] is False
+    assert "git clone" in result["command"]
+    # Plugins dir untouched.
+    assert list((state.cfg.plugin_dir).iterdir()) == []
+
+
+def test_install_plugin_tool_rejects_execute_when_config_forbids(tmp_path):
+    """``execute=True`` without ``allow_plugin_install`` must raise a
+    PermissionError. That becomes an ``error:PermissionError`` in audit."""
+    state, mcp = _install_mgmt_tools(tmp_path, allow_install=False)
+    fn = mcp.tools["router_install_plugin"]
+
+    with pytest.raises(PermissionError, match="allow_plugin_install"):
+        fn(source="github:acme/foo-mcp", execute=True)
+
+
+def test_install_plugin_tool_audit_logs(tmp_path, monkeypatch):
+    """Every invocation produces one audit entry with the plugin name
+    ``router`` and the tool name ``router_install_plugin`` — same
+    contract as every other wrapped tool."""
+    state, mcp = _install_mgmt_tools(tmp_path, audit_enabled=True)
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        router_mod.audit, "log_tool_call", lambda **kw: captured.append(kw)
+    )
+    fn = mcp.tools["router_install_plugin"]
+
+    fn(source="github:acme/foo-mcp")
+
+    assert len(captured) == 1
+    entry = captured[0]
+    assert entry["plugin"] == "router"
+    assert entry["tool"] == "router_install_plugin"
+    assert entry["status"] == "ok"
+    # The source is fine to audit; values of credentials are the only
+    # thing we hash/omit and this tool doesn't receive any.
+    assert entry["args"]["source"] == "github:acme/foo-mcp"
+
+
+def test_enable_plugin_tool_flips_manifest_flag(tmp_path):
+    """``router_enable_plugin`` must actually edit the file so the
+    next ``state.refresh()`` picks it up."""
+    state, mcp = _install_mgmt_tools(tmp_path)
+    plugin_dir = state.cfg.plugin_dir / "toggleable"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text(
+        '[plugin]\nname = "toggleable"\nversion = "1.0.0"\nenabled = false\n\n[security]\n',
+        encoding="utf-8",
+    )
+
+    fn = mcp.tools["router_enable_plugin"]
+    result = fn(name="toggleable")
+
+    assert result["previous"] is False
+    assert result["current"] is True
+    text = (plugin_dir / "plugin.toml").read_text("utf-8")
+    assert "enabled = true" in text
+
+
+def test_list_plugins_tool_returns_full_listing(tmp_path):
+    """``router_list_plugins`` must surface more than
+    ``router_status`` — per-plugin detail including the enabled flag."""
+    state, mcp = _install_mgmt_tools(tmp_path)
+    for name, enabled in (("alpha", True), ("bravo", False)):
+        d = state.cfg.plugin_dir / name
+        d.mkdir(parents=True)
+        flag = "true" if enabled else "false"
+        (d / "plugin.toml").write_text(
+            f'[plugin]\nname = "{name}"\nversion = "1.0.0"\nenabled = {flag}\n\n[security]\n',
+            encoding="utf-8",
+        )
+
+    fn = mcp.tools["router_list_plugins"]
+    result = fn()
+
+    names = [p["name"] for p in result["plugins"]]
+    assert names == ["alpha", "bravo"]
+    alpha = next(p for p in result["plugins"] if p["name"] == "alpha")
+    bravo = next(p for p in result["plugins"] if p["name"] == "bravo")
+    assert alpha["enabled"] is True
+    assert bravo["enabled"] is False

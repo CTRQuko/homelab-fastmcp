@@ -30,7 +30,7 @@ from typing import Any
 
 import logging
 
-from core import audit, secrets
+from core import audit, plugin_mgmt, secrets
 from core.inventory import Inventory, InventoryError
 from core.loader import LoadReport, reconcile, tool_allowed
 from core.memory import MemoryBackend, load_backend
@@ -61,6 +61,7 @@ class RouterConfig:
     memory_config: dict[str, Any]
     strict_manifest: bool
     audit_enabled: bool
+    allow_plugin_install: bool
     state_path: Path
     profile_path: Path
 
@@ -89,6 +90,11 @@ class RouterConfig:
             memory_config=backend_config,
             strict_manifest=bool(security.get("strict_manifest", True)),
             audit_enabled=bool(security.get("audit_enabled", True)),
+            # Permissive install/remove of plugins is OFF by default — the
+            # LLM is authorised to *propose* the command, not to run a clone
+            # against arbitrary URLs. Operator flips this explicitly when
+            # the trust boundary is understood.
+            allow_plugin_install=bool(security.get("allow_plugin_install", False)),
             state_path=ROOT / "config" / ".last_state.json",
             profile_path=ROOT / "profiles" / f"{profile_name}.yaml",
         )
@@ -105,6 +111,7 @@ class RouterConfig:
             memory_config={},
             strict_manifest=True,
             audit_enabled=True,
+            allow_plugin_install=False,
             state_path=ROOT / "config" / ".last_state.json",
             profile_path=ROOT / "profiles" / "default.yaml",
         )
@@ -356,6 +363,110 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
             return result
 
         return _timed("router_add_credential", run, args)
+
+    # -------- Plugin lifecycle meta-tools -----------------------------------
+    # All four work on plugins/<name>/ directly. install/remove default to
+    # "emit instruction" — the LLM hands the operator a command to run.
+    # When `[security].allow_plugin_install = true` in router.toml the
+    # operator has opted into the router doing the clone/remove itself.
+
+    @mcp.tool
+    def router_install_plugin(source: str, execute: bool = False) -> dict:
+        """Install a plugin from a source.
+
+        ``source`` accepts ``github:owner/repo``, a full https URL to a
+        git repo, or an absolute local path. With ``execute=false``
+        (default) the tool returns the exact command the operator
+        should run. Setting ``execute=true`` is only honoured if
+        ``[security].allow_plugin_install`` is ``true`` in
+        ``router.toml`` — otherwise the call is rejected.
+
+        After a successful install, restart Mimir so the plugin is
+        discovered.
+        """
+        args = {"source": source, "execute": bool(execute)}
+
+        def run() -> dict:
+            if execute and not state.cfg.allow_plugin_install:
+                raise PermissionError(
+                    "execute=true requires [security].allow_plugin_install = true "
+                    "in router.toml; current config forbids permissive installs"
+                )
+            result = plugin_mgmt.install_plugin(
+                source, state.cfg.plugin_dir, execute=bool(execute)
+            )
+            if result.get("executed"):
+                state.refresh()
+            return result
+
+        return _timed("router_install_plugin", run, args)
+
+    @mcp.tool
+    def router_remove_plugin(name: str, execute: bool = False) -> dict:
+        """Remove a plugin directory from ``plugins/``.
+
+        Same two-mode contract as :func:`router_install_plugin`: without
+        ``execute=true`` the tool returns the ``rm -rf`` command for
+        the operator; with ``execute=true`` the router runs it directly
+        and only if config allows.
+        """
+        args = {"name": name, "execute": bool(execute)}
+
+        def run() -> dict:
+            if execute and not state.cfg.allow_plugin_install:
+                raise PermissionError(
+                    "execute=true requires [security].allow_plugin_install = true "
+                    "in router.toml; current config forbids permissive removes"
+                )
+            result = plugin_mgmt.remove_plugin(
+                name, state.cfg.plugin_dir, execute=bool(execute)
+            )
+            if result.get("executed"):
+                state.refresh()
+            return result
+
+        return _timed("router_remove_plugin", run, args)
+
+    @mcp.tool
+    def router_enable_plugin(name: str) -> dict:
+        """Set ``[plugin].enabled = true`` in the plugin's manifest."""
+        args = {"name": name}
+
+        def run() -> dict:
+            result = plugin_mgmt.set_plugin_enabled(
+                name, state.cfg.plugin_dir, enabled=True
+            )
+            state.refresh()
+            return result
+
+        return _timed("router_enable_plugin", run, args)
+
+    @mcp.tool
+    def router_disable_plugin(name: str) -> dict:
+        """Set ``[plugin].enabled = false`` in the plugin's manifest."""
+        args = {"name": name}
+
+        def run() -> dict:
+            result = plugin_mgmt.set_plugin_enabled(
+                name, state.cfg.plugin_dir, enabled=False
+            )
+            state.refresh()
+            return result
+
+        return _timed("router_disable_plugin", run, args)
+
+    @mcp.tool
+    def router_list_plugins() -> dict:
+        """List every plugin discovered under ``plugins/`` with detail.
+
+        Complements :func:`router_status` which only counts them.
+        Includes quarantined entries so the operator can see what
+        failed parsing without digging through logs.
+        """
+        def run() -> dict:
+            return {"plugins": plugin_mgmt.list_plugins(state.cfg.plugin_dir)}
+
+        return _timed("router_list_plugins", run, {})
 
     # Dynamic meta-tools: one setup_<plugin>() per plugin that still needs
     # configuration. They are a dead-simple wrapper that returns the same
