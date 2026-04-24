@@ -1,8 +1,16 @@
-"""Framework entry point — loads core modules, inventory and plugins.
+"""Mimir — framework entry point.
 
-This is the modular replacement for the legacy ``server.py``. It is wired
-up alongside the legacy server while Fases 1–6 land; clients (Claude
-Desktop, Hermes) keep pointing at ``server.py`` until Fase 8 cuts over.
+The router loads core modules, declarative inventory, and any plugins
+sitting under ``plugins/``. Once a client (Claude Desktop, an agent in
+the loop, etc.) connects over stdio, Mimir exposes:
+
+- ``router_*`` meta-tools so the LLM can guide the user through
+  onboarding (add hosts/services/credentials, see what is missing).
+- ``setup_<plugin>()`` dynamic tools for plugins waiting on
+  requirements.
+- The plugins themselves, mounted as subservers under their own
+  namespace via FastMCP ``create_proxy``.
+- Skills/agents discovered as ``.md`` files with frontmatter.
 
 Usage::
 
@@ -191,7 +199,7 @@ def _apply_profile_gate(report: LoadReport, enabled: set[str] | None) -> None:
 def format_report(state: RouterState) -> str:
     cfg = state.cfg
     lines: list[str] = []
-    lines.append(f"[router] homelab-fastmcp framework — profile: {cfg.profile}")
+    lines.append(f"[mimir] router — profile: {cfg.profile}")
     lines.append(
         "[router] Core: inventory, secrets, audit, memory(" + state.memory.name + ")"
     )
@@ -238,7 +246,7 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
 
     from core import bootstrap
 
-    mcp = FastMCP("homelab-fastmcp-router")
+    mcp = FastMCP("mimir")
 
     def _audit(tool: str, args: Any, duration_ms: float, status: str) -> None:
         if state.cfg.audit_enabled:

@@ -278,7 +278,7 @@ def test_format_report_shows_counts(tmp_path):
     )
     state = router_mod.RouterState.bootstrap(cfg)
     text = router_mod.format_report(state)
-    assert "homelab-fastmcp framework" in text
+    assert "[mimir] router" in text
     assert "0 hosts" in text
     assert "needshost v1.0.0: pending_setup" in text
     assert "Next (hosts): type=proxmox" in text
@@ -500,7 +500,7 @@ def test_build_mcp_registers_tools(tmp_path):
     # FastMCP 3.x exposes tools via _tool_manager / internal registry; use
     # the public contract: it has a .name. We only need to assert it built.
     assert mcp is not None
-    assert getattr(mcp, "name", "") == "homelab-fastmcp-router"
+    assert getattr(mcp, "name", "") == "mimir"
 
 
 # ---------------------------------------------------------------------------

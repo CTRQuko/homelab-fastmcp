@@ -1,13 +1,13 @@
 # Operator notes
 
 Estos documentos son **notas del caso de uso del autor** del framework.
-Describen cómo `<NUEVO_NOMBRE>` se despliega en un homelab concreto
+Describen cómo `Mimir` se despliega en un homelab concreto
 (Proxmox + Linux + UniFi + GPON + serial), qué clientes MCP apuntan a
 él (Hermes LXC 302 pve2, Claude Desktop del autor), y los manifests
 listos para los plugins que el autor usa a diario.
 
 > **No son parte del contrato público del framework.** Si vienes a
-> entender `<NUEVO_NOMBRE>` para construir tu propio plugin o
+> entender `Mimir` para construir tu propio plugin o
 > desplegarlo en tu infra, mira antes:
 >
 > - `docs/naming-guide.md` — convenciones canónicas de nombres.

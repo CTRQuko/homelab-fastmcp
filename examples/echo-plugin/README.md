@@ -31,7 +31,7 @@ examples/echo-plugin/
 Opción 1 — symlink al checkout del framework:
 
 ```bash
-cd /path/to/<NUEVO_NOMBRE>
+cd /path/to/mimir-mcp
 ln -s $(pwd)/examples/echo-plugin plugins/echo
 python router.py --dry-run
 # Expected: plugin 'echo' listado con status=ok

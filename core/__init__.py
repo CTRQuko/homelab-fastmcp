@@ -1,4 +1,4 @@
-"""Core framework package for homelab-fastmcp.
+"""Core framework package for Mimir.
 
 Provides the generic, infra-agnostic building blocks that plugins rely on:
 secrets vault, audit log, inventory API and memory adapter.

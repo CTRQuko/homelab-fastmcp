@@ -1,7 +1,7 @@
 [project]
-name = "homelab-fastmcp"
+name = "mimir-mcp"
 version = "0.3.2"
-description = "MCP Aggregator para homelab — reemplaza mcp-router Go con FastMCP"
+description = "Mimir — declarative MCP router with LLM-guided onboarding, scoped plugins and a layered security model."
 authors = [
   { name = "Jandro" }
 ]

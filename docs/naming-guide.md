@@ -13,7 +13,7 @@ no (nombre del repo de un plugin terceiro).
 
 ### El framework
 
-Un único paquete Python (nombre canónico: `<NUEVO_NOMBRE>`) que expone
+Un único paquete Python (nombre canónico: `mimir-mcp`) que expone
 un `router.py` como entrypoint MCP. Se puede instalar solo, sin
 plugins, y sigue siendo útil: proporciona meta-tools para que el LLM
 añada hosts, servicios y credenciales al `inventory/` del operador.
@@ -77,10 +77,10 @@ no al homelab del operador.
 
 | Qué | Forma | Ejemplo |
 |---|---|---|
-| Paquete Python (`pyproject.toml` `[project].name`) | kebab-case | `<NUEVO_NOMBRE>` |
+| Paquete Python (`pyproject.toml` `[project].name`) | kebab-case | `mimir-mcp` |
 | Import path | snake_case derivado | `<nuevo_nombre>` |
-| Repo GitHub | kebab-case, mismo que paquete | `<owner>/<NUEVO_NOMBRE>` |
-| Entrypoint CLI | mismo que paquete | `<NUEVO_NOMBRE>` o `router.py` |
+| Repo GitHub | kebab-case, mismo que paquete | `<owner>/mimir-mcp` |
+| Entrypoint CLI | mismo que paquete | `mimir-mcp` o `router.py` |
 
 ### Plugin
 

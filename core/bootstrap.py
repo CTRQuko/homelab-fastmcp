@@ -37,7 +37,7 @@ def router_status(
 ) -> dict[str, Any]:
     inv = inventory.summary()
     return {
-        "framework": "homelab-fastmcp",
+        "framework": "mimir",
         "memory_backend": memory_backend,
         "inventory": inv,
         "plugins": [
@@ -60,11 +60,13 @@ def router_status(
 
 def router_help() -> dict[str, Any]:
     return {
-        "name": "homelab-fastmcp",
+        "name": "mimir",
         "purpose": (
-            "Modular MCP framework. Users declare their infrastructure in "
-            "inventory/*.yaml and drop plugins into plugins/. The router wires "
-            "everything up and exposes each plugin's tools."
+            "Mimir is a declarative MCP router. Users describe their "
+            "infrastructure in inventory/*.yaml and drop plugins under "
+            "plugins/. The router discovers them, wires them up, exposes "
+            "each plugin's tools, and guides the LLM through the missing "
+            "pieces."
         ),
         "next_steps": [
             "Call router_status() to see the current state.",
