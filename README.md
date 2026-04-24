@@ -1,186 +1,136 @@
-# homelab-fastmcp
+# Mimir
 
-MCP Aggregator en Python con FastMCP 3.x. Monta downstream MCPs + tools nativas.
+> *"Mimir guarda el pozo de la sabiduría: aconseja a Odín cuando le falta
+> contexto. Tu router MCP hace lo mismo con el LLM."*
 
-## Caracteristicas
+**Mimir is a declarative MCP router** built on FastMCP 3.x. Drop a
+`plugin.toml` next to any MCP server and Mimir discovers it, mounts it
+under its own namespace, scopes its credentials, filters its tools, and
+exposes the union to your client (Claude Desktop, an agent in a loop,
+anything that speaks MCP over stdio).
 
-- **Cross-platform**: Windows, Linux, macOS (via `HOMELAB_DIR`)
-- **Adaptativo**: Omite `windows`/`docker` en Linux/macOS automaticamente
-- **Seguro**: Input validation regex, sanitizacion de errores, secrets externalizados
-- **Testeado**: 95+ tests (seguridad, integracion, resiliencia, adaptacion, contratos)
-- **Logging**: arranque estructurado en stderr (stdout reservado al protocolo MCP)
+What sets Mimir apart from other MCP aggregators:
 
-## Estructura
+- **Declarative plugin contract** — every plugin ships its own
+  `plugin.toml` describing identity, runtime, security, requirements.
+  No central config to keep in sync.
+- **Inventory separated from plugins** — operators describe their
+  infrastructure in `inventory/*.yaml` (hosts, services). Plugins ask
+  the router *"give me hosts of type X"* — they never hardcode IPs or
+  hostnames.
+- **LLM-guided onboarding** — when a plugin needs hosts or credentials
+  the operator hasn't supplied, the router exposes a `setup_<plugin>()`
+  meta-tool. The LLM walks the operator through what's missing,
+  conversation by conversation.
+- **Layered security** — manifest quarantine, audit log, scoped
+  credential vault, profile gate, tool whitelist/blacklist, and
+  cross-plugin env scoping in subprocess. See
+  [`docs/security-model.md`](docs/security-model.md).
 
-```
-native_tools/          # Tools nativas en Python
-  secrets.py           # Loader unificado de secrets (cross-platform)
-  github.py            # API REST GitHub con validacion
-  tailscale.py         # API REST Tailscale con sanitizacion
-  uart_detect.py       # Deteccion automatica de dispositivos serie
-
-server.py              # Aggregator FastMCP (adaptativo por plataforma)
-
-tests/                 # 95+ tests pytest
-  test_integration.py       # exposicion de tools
-  test_security.py          # validacion inputs
-  test_security_extended.py # sanitizacion + masking
-  test_resilience.py        # comportamiento ante fallos
-  test_adaptive.py          # cross-platform
-  test_critical.py          # contratos fundamentales + regresiones
-  test_coverage_gaps.py     # areas peor cubiertas
-  manual/                   # tests con hardware real (excluidos de pytest normal)
-```
-
-## Quick Start
-
-### Windows
-
-```powershell
-# 1. Clonar en C:\homelab\laboratorio\homelab-fastmcp (o ajustar HOMELAB_DIR)
-# 2. Configurar secrets en C:\homelab\.config\secrets\*.md
-# 3. Instalar dependencias
-uv sync --extra test
-# 4. Verificar tests
-uv run --extra test pytest tests/ -v    # 95 passed, 2 skipped
-# 5. Arranque manual (opcional, para smoke test)
-uv run homelab-fastmcp                   # queda escuchando stdio
-```
-
-### Linux / macOS
+## Quick install
 
 ```bash
-export HOMELAB_DIR=/home/tuusuario/homelab
-uv sync --extra test
-uv run --extra test pytest tests/ -v
-uv run homelab-fastmcp
+git clone https://github.com/CTRQuko/mimir-mcp
+cd mimir-mcp
+uv sync
+uv run python router.py --dry-run
 ```
 
-## Uso como MCP server
+The dry-run prints what Mimir sees: inventory, discovered plugins,
+skills/agents. Without configuration it serves only meta-tools — that's
+intentional. Drop your first plugin under `plugins/` and re-run.
 
-`homelab-fastmcp` se registra como subproceso stdio en cualquier cliente MCP.
-Ejemplos:
+## Hello world — the minimal plugin
 
-### OpenCode (`~/.config/opencode/opencode.json`)
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "homelab-fastmcp": {
-      "command": [
-        "uv", "run", "--directory",
-        "C:\\homelab\\laboratorio\\homelab-fastmcp",
-        "homelab-fastmcp"
-      ],
-      "enabled": true,
-      "type": "local"
-    }
-  }
-}
-```
-
-### Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.json`)
-
-```json
-{
-  "mcpServers": {
-    "homelab-fastmcp": {
-      "command": "uv",
-      "args": [
-        "run", "--directory",
-        "C:\\homelab\\laboratorio\\homelab-fastmcp",
-        "homelab-fastmcp"
-      ]
-    }
-  }
-}
-```
-
-En Linux/macOS sustituir la ruta por la del clonado (ej. `~/homelab/laboratorio/homelab-fastmcp`).
-
-## Configuracion
-
-### Variables de entorno
-
-| Variable | Default | Descripcion |
-|----------|---------|-------------|
-| `HOMELAB_DIR` | `C:/homelab` (Win) | Directorio raiz del homelab |
-| `HOMELAB_LOG_LEVEL` | `INFO` | Nivel de logging (DEBUG/INFO/WARNING/ERROR) |
-| `HOMELAB_DOTENV_WINS` | `0` | `1` para que el `.env` del proyecto pise env vars externas |
-| `UNIFI_API_KEY` | — | API key de UniFi |
-| `UNIFI_API_TYPE` | `local` | `local`, `cloud-ea`, `cloud-v1` |
-| `TAILSCALE_API_KEY` | — | API key de Tailscale |
-| `TAILSCALE_TAILNET` | — | Nombre del tailnet |
-| `GITHUB_TOKEN` | — | Token de GitHub (opcional, sin token: anonymous 60 req/h) |
-
-### Prioridad de secrets
-
-1. Variable de entorno
-2. `$HOMELAB_DIR/.config/secrets/*.md`
-3. `.env` en raiz del proyecto
-
-> **Credenciales stale en el entorno del sistema**
->
-> Si una env var externa (p. ej. Windows User Environment, launcher, shell)
-> exporta un valor viejo/revocado de una credencial, tiene prioridad sobre
-> el `.env` local. El aggregator emite un `WARNING [homelab-fastmcp] external
-> env differs from .env for: [KEYS]` en stderr al arrancar si detecta esta
-> disparidad en credenciales críticas (UNIFI_*, GPON_*, PROXMOX_*, TAILSCALE_*,
-> GITHUB_*).
->
-> Opciones:
-> - **Limpiar la env var externa** (recomendado). En Windows:
->   `[Environment]::SetEnvironmentVariable('UNIFI_API_KEY', $null, 'User')`
-> - **Forzar `.env` como source of truth** exportando `HOMELAB_DOTENV_WINS=1`
->   antes de lanzar el cliente MCP.
->
-> **Nota sobre reinicios:** el protocolo MCP stdio congela el `os.environ`
-> del subprocess al lanzar. Tras cambiar credenciales, reiniciar el cliente
-> MCP (Claude Desktop, OpenCode, …) para que las nuevas sean vistas.
-
-## Downstreams
-
-| Namespace | Plataforma | Descripcion |
-|-----------|-----------|-------------|
-| `windows_*` | Windows-only | PowerShell, filesystem |
-| `linux_*` | Todas | SSH a hosts Linux |
-| `proxmox_*` | Todas | VMs, LXCs, nodos Proxmox |
-| `docker_*` | Windows-only | Contenedores e imagenes |
-| `unifi_*` | Todas | Red UniFi, VLANs, clientes |
-| `uart_*` | Todas | UART/Serie generico |
-| `gpon_*` | Todas | Sticks GPON via SSH |
-
-## Tests
+Look at [`examples/echo-plugin/`](examples/echo-plugin/) to see the full
+contract in ~30 lines. To mount it:
 
 ```bash
-# Toda la suite (excluye tests/manual/)
-uv run --extra test pytest tests/ -v              # 95 passed, 2 skipped
-
-# Solo unit + critical + coverage (sin integracion, como en CI)
-uv run --extra test pytest tests/ -m "not integration" -v
-
-# Por categoria
-uv run --extra test pytest tests/test_security*.py -v
-uv run --extra test pytest tests/test_critical.py -v
-uv run --extra test pytest tests/test_coverage_gaps.py -v
-
-# Tests manuales (requieren hardware)
-python tests/manual/test_hardware.py
+ln -s "$(pwd)/examples/echo-plugin" plugins/echo
+uv run python router.py --dry-run
 ```
 
-## Estado
+Output:
 
-- **Version**: 0.3.1
-- **9/9** servicios funcionan (funcional)
-- **95/95** tests pasan (2 skipped: Linux-only en Windows + servers.json ausente)
-- **0** secrets hardcodeados en codigo fuente
-- **Ruff**: clean (`uvx ruff check .`)
-- **CI**: GitHub Actions matrix (ubuntu + windows)
+```
+[mimir] router — profile: default
+[mimir] Core: inventory, secrets, audit, memory(noop)
+[mimir] Inventory: 0 hosts, 0 services
+[mimir] Plugins discovered: 1
+[mimir] Skills: 0  Agents: 0
+```
 
-## Documentacion
+Now the client sees `echo_echo` and `echo_reverse` alongside the
+`router_*` meta-tools.
 
-- [`docs/INSTALL.md`](docs/INSTALL.md) — Guia de instalacion detallada
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Decisiones de arquitectura
-- [`docs/SECURITY.md`](docs/SECURITY.md) — Modelo de seguridad
-- [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — Historial de cambios
+## How it compares
+
+There are several MCP aggregators in the wild. Mimir occupies a specific
+slot:
+
+| Tool | What it adds | Where Mimir differs |
+|------|--------------|---------------------|
+| **FastMCP `mount()`** | Library to mount subservers in code | Mimir adds discovery, manifest schema and security layers on top |
+| **MetaMCP** | Aggregator + middleware in Docker, three-level hierarchy | Mimir is a single-process Python router, focused on declarative plugin contracts and LLM-guided onboarding |
+| **Local MCP Gateway** | Aggregator with Web UI, OAuth, profiles | Mimir is CLI-first and focused on the plugin contract — no UI, no OAuth (yet) |
+| **mcp-proxy-server** | Routes requests to backend servers | Mimir adds the inventory layer and semantic requirements |
+| **mxcp** | Build MCP servers from YAML/SQL/Python | Mimir aggregates already-built servers; complementary, not competing |
+
+## Documentation
+
+- [`docs/naming-guide.md`](docs/naming-guide.md) — canonical naming
+  conventions for plugins, repos and tools.
+- [`docs/plugin-contract.md`](docs/plugin-contract.md) — full reference
+  for the `plugin.toml` schema.
+- [`docs/inventory-schema.md`](docs/inventory-schema.md) — the YAML
+  format operators use to declare hosts and services.
+- [`docs/security-model.md`](docs/security-model.md) — the seven
+  security layers in detail.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the router,
+  core modules and plugins fit together.
+- [`docs/INSTALL.md`](docs/INSTALL.md) — installation paths beyond the
+  Quick install above.
+- [`docs/operator-notes/`](docs/operator-notes/) — notes from one real
+  deployment (the author's homelab). Useful as a worked example;
+  **not** part of the public contract.
+
+## Status
+
+Mimir is a working framework with a 280+ test suite covering the core
+modules, the loader, the router wiring, the security model, the
+example plugin and the cutover manifests. It is being used in
+production by the author against a real homelab. The branch
+`refactor/generify-naming` (this code) is not yet published; the
+public release is gated on the cutover described under
+`docs/operator-notes/cutover/`.
+
+## Project goals (and non-goals)
+
+**Goals:**
+
+- A small, readable router that anyone can audit in an evening.
+- Plugins as truly independent MCP servers — usable standalone or
+  mounted.
+- Onboarding that an LLM can carry the operator through.
+- Security defaults that the operator can reason about.
+
+**Non-goals:**
+
+- A full PaaS or sandbox. Mimir trusts the OS for process isolation;
+  layer 5 tier 2 (filesystem/network/exec interceptors) is explicitly
+  deferred until a real sandbox lands.
+- A web UI. CLI + LLM are the supported control planes.
+- Replacing FastMCP. Mimir is built on top of it.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
+
+## Acknowledgements
+
+- The [Model Context Protocol](https://modelcontextprotocol.io) team
+  at Anthropic for the standard.
+- [FastMCP](https://github.com/jlowin/fastmcp) for the Python building
+  blocks.
+- The author's prima Claude, for asking *"is this for one homelab or
+  for an ecosystem?"* at the right moment.

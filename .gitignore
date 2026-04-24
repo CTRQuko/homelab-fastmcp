@@ -70,3 +70,7 @@ config/audit.log*
 config/memory.db
 plugins/*/
 !plugins/_example/
+
+# Per-session Claude Code preferences — never commit
+.claude/settings.local.json
+.claude/
