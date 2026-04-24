@@ -69,7 +69,7 @@ router los descubre en `skills_dir` y `agents_dir` (configurados en
 `router.toml`) y los expone como `skill_<nombre>` o `agent_<nombre>`.
 No son plugins — no tienen runtime, no spawn subprocess, simplemente
 devuelven contenido. Pertenecen al ecosistema Claude (`~/.claude/`),
-no al homelab del operador.
+fuera del scope del operador.
 
 ## 2. Convenciones de nombres
 
@@ -94,7 +94,7 @@ no al homelab del operador.
 **Nota sobre `mcp-plugin-<tema>`:** no se impone, pero ayuda a
 descubrimiento en GitHub y deja claro que un repo es un plugin de este
 ecosistema. Repos que ya existen con otro nombre (por ejemplo
-`<usuario>/homelab-mcp`) pueden ser mountados igual — lo único que
+`<usuario>/<servicio>-mcp`) pueden ser mountados igual — lo único que
 cuenta es el `plugin.toml` del repo.
 
 ### Skill / agent
@@ -158,7 +158,7 @@ version = "1.0.0"
 
 [runtime]
 command = "uv"
-args = ["run", "homelab-proxmox-mcp"]
+args = ["run", "proxmox-mcp"]
 # cwd del subprocess = directorio del plugin (automático)
 
 [security]
