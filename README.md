@@ -1,5 +1,10 @@
 # Mimir
 
+[![CI](https://github.com/CTRQuko/mimir-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/CTRQuko/mimir-mcp/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/mimir-mcp.svg)](https://pypi.org/project/mimir-mcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/mimir-mcp.svg)](https://pypi.org/project/mimir-mcp/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > *"Mimir guarda el pozo de la sabiduría: aconseja a Odín cuando le falta
 > contexto. Tu router MCP hace lo mismo con el LLM."*
 

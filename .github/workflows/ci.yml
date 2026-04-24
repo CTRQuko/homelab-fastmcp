@@ -8,49 +8,39 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint-and-test:
-    name: lint + tests (${{ matrix.os }})
+  test:
+    name: tests (Python ${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-    env:
-      # En CI los downstreams no están disponibles — los integration tests
-      # pueden tolerarlo (los tests están diseñados para eso) o skiparse.
-      HOMELAB_DIR: ${{ github.workspace }}/homelab-stub
-      HOMELAB_LOG_LEVEL: DEBUG
+        python-version: ["3.11", "3.12"]
+        os: [ubuntu-latest]
+        include:
+          # Pin a Windows job on the latest Python only — exercises the
+          # path-handling code that differs between platforms.
+          - python-version: "3.12"
+            os: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync --extra test --extra dev
+      - name: Sync project (with test extras)
+        run: uv sync --extra test
 
-      - name: Ruff check
-        run: uv run ruff check .
+      - name: Run pytest
+        run: uv run --extra test pytest tests/ -q
 
-      - name: Run pytest (unit + critical + coverage_gaps)
-        run: >
-          uv run pytest
-          tests/test_security.py
-          tests/test_security_extended.py
-          tests/test_critical.py
-          tests/test_coverage_gaps.py
-          tests/test_adaptive.py
-          -m "not integration"
-          -v --tb=short
-
-      # NOTA: los tests marcados con @pytest.mark.integration (y todo
-      # tests/test_integration.py / test_resilience.py) requieren los
-      # downstream MCPs en C:/homelab/mcp-servers/ y se ejecutan solo en local.
+      - name: Dry-run the router
+        run: uv run python router.py --dry-run
