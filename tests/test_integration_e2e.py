@@ -171,3 +171,94 @@ async def test_echo_plugin_tools_roundtrip(tmp_path):
 
         reversed_ = await client.call_tool("echo_reverse", {"text": "mimir"})
         assert reversed_.data == "rimim"
+
+
+@pytest.mark.asyncio
+async def test_install_plugin_strict_mode_round_trip(tmp_path):
+    """The LLM-guided install path: in strict mode the tool returns a
+    manual_instruction payload. The plugins/ directory must stay
+    untouched after the call — otherwise we're back to the "router
+    runs arbitrary git clones" attack surface that the strict default
+    explicitly avoids."""
+    router_path = _make_isolated_router_root(tmp_path)
+    plugins_dir = tmp_path / "plugins"
+    before = set(plugins_dir.iterdir())
+
+    async with _client_for(router_path) as client:
+        result = await client.call_tool(
+            "router_install_plugin",
+            {"source": "github:acme/dummy-plugin"},
+        )
+
+    payload = result.data
+    assert payload["executed"] is False
+    assert payload["action"] == "manual_instruction"
+    assert "git clone https://github.com/acme/dummy-plugin.git" in payload["command"]
+    assert set(plugins_dir.iterdir()) == before, "plugins/ was modified in strict mode"
+
+
+@pytest.mark.asyncio
+async def test_list_plugins_surfaces_mounted(tmp_path):
+    """router_list_plugins should expose the same plugin router_status
+    counts, but with per-plugin detail (version, enabled, status). If
+    the listing diverges from reality the LLM gets confused."""
+    router_path = _make_isolated_router_root(tmp_path)
+
+    async with _client_for(router_path) as client:
+        result = await client.call_tool("router_list_plugins", {})
+
+    plugins = result.data["plugins"]
+    assert len(plugins) == 1
+    echo = plugins[0]
+    assert echo["name"] == "echo"
+    assert echo["enabled"] is True
+    assert echo["status"] == "ok"
+    assert echo["version"] == "1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_audit_log_captures_meta_tool_calls(tmp_path):
+    """Every router_* invocation must produce one line in the audit
+    log. This test forces the framework to write to a known file
+    (via MIMIR_AUDIT_LOG) and asserts the entries land there with
+    the expected shape — proves the wiring at runtime, not just at
+    import time."""
+    router_path = _make_isolated_router_root(tmp_path)
+    audit_log = tmp_path / "audit.jsonl"
+
+    # Inject MIMIR_AUDIT_LOG into the subprocess env so it writes to
+    # our temp file instead of the framework default.
+    client = Client(
+        {
+            "mcpServers": {
+                "mimir": {
+                    "command": sys.executable,
+                    "args": [str(router_path)],
+                    "env": {"MIMIR_AUDIT_LOG": str(audit_log)},
+                }
+            }
+        }
+    )
+
+    async with client:
+        await client.call_tool("router_help", {})
+        await client.call_tool("router_status", {})
+        await client.call_tool("router_list_plugins", {})
+
+    # The audit log is fire-and-forget — give it a beat to flush, the
+    # router is already shut down by the time we read.
+    assert audit_log.exists(), f"audit log not written at {audit_log}"
+    lines = [
+        line for line in audit_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    import json
+    tool_names = [json.loads(line)["tool"] for line in lines]
+    # Each invocation produces one entry; the three we made all show up.
+    assert "router_help" in tool_names
+    assert "router_status" in tool_names
+    assert "router_list_plugins" in tool_names
+    # Status field is "ok" for the happy path — error paths get
+    # status="error:<ExceptionType>" but we didn't trigger any.
+    statuses = {json.loads(line)["status"] for line in lines}
+    assert statuses == {"ok"}

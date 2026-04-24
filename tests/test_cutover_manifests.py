@@ -20,7 +20,12 @@ import router as router_mod
 
 ROOT = Path(__file__).resolve().parent.parent
 CUTOVER_DIR = ROOT / "docs" / "operator-notes" / "cutover" / "manifests"
-EXPECTED_PLUGINS = {"proxmox", "linux", "windows", "docker", "unifi", "uart", "gpon"}
+EXPECTED_PLUGINS = {
+    "proxmox", "linux", "windows", "docker",
+    "unifi", "uart", "gpon",
+    # Unified manifest for the multi-sub-MCP repo (Fase 7d):
+    "homelab",
+}
 
 
 def _manifest_paths() -> list[Path]:

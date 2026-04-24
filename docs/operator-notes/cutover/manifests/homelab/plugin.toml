@@ -1,0 +1,57 @@
+# Fase 7d cutover manifest — unified "homelab" plugin.
+#
+# Drop this file in C:/homelab/mcp-servers/homelab-mcp/plugin.toml
+# instead of (or alongside) the four separate proxmox/linux/windows/
+# docker manifests.
+#
+# Rationale: the upstream repo CTRQuko/homelab-mcp ships four sub-MCPs
+# behind a single uv project (homelab-{proxmox,linux,windows,docker}-mcp).
+# Mounting them as one plugin ("homelab") keeps the upstream layout
+# untouched while still exposing every tool to the client. The
+# alternative — four separate plugin.toml files in the same repo —
+# would require extending Mimir's loader to read multiple manifests
+# from the same directory, which adds complexity for marginal benefit.
+#
+# This plugin assumes the homelab-mcp repo provides an internal
+# launcher that mounts the four sub-MCPs and re-exposes them. The
+# operator can either:
+#
+# - Add a thin top-level entry point to homelab-mcp that does the
+#   internal mounting (recommended), and reference it as the runtime
+#   command below; or
+# - Replace the [runtime] block with command = "uv" + args = ["run",
+#   "homelab-proxmox-mcp"] to mount only one sub-MCP per plugin
+#   directory, treating each as a standalone homelab-* plugin.
+
+[plugin]
+name = "homelab"
+version = "1.0.0"
+enabled = true
+
+[runtime]
+# Adjust to whichever entry point homelab-mcp exposes for the unified
+# launcher. If no such launcher exists yet, the operator needs to add
+# one before this manifest works — see the README in
+# docs/operator-notes/cutover/.
+command = "uv"
+args = ["run", "homelab-mcp"]
+
+[security]
+credential_refs = ["PROXMOX_*", "DOCKER_HOST"]
+
+[[requires.hosts]]
+type = "proxmox"
+min = 1
+prompt = """
+At least one Proxmox node with an API token (VM.Audit + VM.PowerMgmt)
+is needed for the proxmox sub-MCP to be useful. Linux/Windows/Docker
+sub-MCPs work without explicit hosts but benefit from declared targets.
+"""
+
+[[requires.credentials]]
+pattern = "PROXMOX_*"
+prompt = """
+Proxmox credentials (PROXMOX_<NODE>_HOST / _USER / _TOKEN) are read
+from the vault by the proxmox sub-MCP. The Linux/Windows/Docker
+sub-MCPs use the local SSH config and do not require additional refs.
+"""
