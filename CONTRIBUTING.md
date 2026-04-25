@@ -1,5 +1,7 @@
 # Contributing to Mimir
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](CONTRIBUTING.es.md)
+
 Thanks for considering a contribution. Mimir is small and tries to stay
 that way — the value lives in the contracts, not in the code volume.
 

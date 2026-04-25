@@ -1,5 +1,7 @@
 # Code of Conduct
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](CODE_OF_CONDUCT.es.md)
+
 This project adopts the **Contributor Covenant, version 2.1**, without
 modification. The full text is published at:
 

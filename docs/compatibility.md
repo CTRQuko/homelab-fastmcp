@@ -1,5 +1,7 @@
 # Client compatibility
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](es/compatibility.md)
+
 A matrix of MCP clients we have validated Mimir against. Mimir speaks
 the standard MCP stdio transport, so anything that conforms to the
 spec should work — but reality is messier than spec, and clients
