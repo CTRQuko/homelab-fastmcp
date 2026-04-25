@@ -1,5 +1,7 @@
 # Install Mimir
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](es/INSTALL.md)
+
 Three install paths depending on what you want.
 
 ## 1. Run from a checkout (recommended for now)

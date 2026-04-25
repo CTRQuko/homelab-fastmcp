@@ -1,5 +1,7 @@
 # Mimir architecture
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](es/ARCHITECTURE.md)
+
 A single-process Python MCP router built on FastMCP 3.x. The shape:
 
 ```

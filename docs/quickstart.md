@@ -1,5 +1,7 @@
 # Quickstart — what onboarding feels like
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](es/quickstart.md)
+
 This document shows the experience Mimir is designed for: an operator
 runs the router with no configuration and the LLM walks them through
 the setup, conversation by conversation. No YAML editing, no manual

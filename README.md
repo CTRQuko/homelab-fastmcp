@@ -5,6 +5,8 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/mimir-mcp.svg)](https://pypi.org/project/mimir-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](README.es.md)
+
 > *"Mimir guarda el pozo de la sabiduría: aconseja a Odín cuando le falta
 > contexto. Tu router MCP hace lo mismo con el LLM."*
 
