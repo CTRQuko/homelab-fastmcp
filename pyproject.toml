@@ -74,7 +74,7 @@ python_classes = "Test*"
 python_functions = "test_*"
 # tests/manual/ contiene scripts que requieren hardware real (UART, GPON SSH)
 # ejecutar manualmente con: python tests/manual/test_hardware.py
-norecursedirs = ["manual", ".venv", "__pycache__", ".pytest_cache"]
+norecursedirs = ["manual", "legacy", ".venv", "__pycache__", ".pytest_cache"]
 # Timeout global: ningún test debe bloquear más de 60s.
 # Tests de integración individuales pueden aumentarlo con @pytest.mark.timeout(N).
 addopts = "-v --strict-markers --strict-config --timeout=60"
