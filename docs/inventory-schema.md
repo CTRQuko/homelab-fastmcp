@@ -1,5 +1,7 @@
 # Inventory Schema
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](es/inventory-schema.md)
+
 The framework has **no built-in knowledge** of the user's infrastructure.
 Hosts and services are declared in `inventory/*.yaml` files; plugins ask the
 router what exists, never hard-code addresses or credentials. This is the

@@ -1,5 +1,7 @@
 # Security Model
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](es/security-model.md)
+
 The framework assumes plugins are untrusted code. Four layers of defence are
 in place today; a fifth (runtime interceptors) is scoped for a later phase.
 

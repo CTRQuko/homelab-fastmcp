@@ -1,5 +1,7 @@
 # Plugin Contract
 
+🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](es/plugin-contract.md)
+
 Every plugin lives in its own directory under `plugins/<name>/` and exposes a
 manifest called `plugin.toml`. The router walks `plugins/` at startup, parses
 every manifest, and evaluates each plugin's requirements against the
