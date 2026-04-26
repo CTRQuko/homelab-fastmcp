@@ -21,8 +21,13 @@ The format is:
    venv = "auto"
 
    [security]
-   inventory_access = ["hosts:type=proxmox"]
+   # ENFORCED today:
    credential_refs = ["PROXMOX_*_TOKEN"]
+   # PARSED but NOT YET ENFORCED (Layer 5 — see docs/security-model.md).
+   # Plugin authors should treat these as documentation of intent, not
+   # as a sandbox; real enforcement ships with the plugin runtime
+   # sandbox milestone:
+   inventory_access = ["hosts:type=proxmox"]
    network_dynamic = true
    filesystem_read = []
    filesystem_write = []
@@ -37,6 +42,7 @@ The format is:
    ]
 
    [tools]
+   # ENFORCED via FastMCP middleware in router._make_tool_filter_middleware.
    whitelist = []
    blacklist = []
 """

@@ -14,15 +14,22 @@ deps = []
 venv = "auto"
 
 [security]
-# Types of inventory the plugin is allowed to read.
-inventory_access = ["hosts:type=linux"]
 # Credential references the plugin may request from the vault.
+# THIS IS THE ONLY FIELD ACTIVELY ENFORCED TODAY (plus [tools] below).
 credential_refs = ["EXAMPLE_*"]
-# Dynamic network allowed? (true if the plugin opens connections to inventory hosts)
-network_dynamic = false
-filesystem_read = []
-filesystem_write = []
-exec = []
+
+# --- Reserved for future enforcement (Layer 5 — see docs/security-model.md).
+# The fields below are PARSED but NOT YET ENFORCED. Treat them as
+# documentation of intent for plugin authors and a future-proofing hook —
+# do NOT rely on them as a sandbox: a subprocess plugin still inherits
+# the OS permissions of the router process. Real enforcement requires
+# seccomp/landlock/namespaces and ships with the plugin runtime sandbox
+# milestone, not before.
+inventory_access = ["hosts:type=linux"]   # not enforced
+network_dynamic = false                   # not enforced
+filesystem_read = []                      # not enforced
+filesystem_write = []                     # not enforced
+exec = []                                 # not enforced
 
 [requires]
 hosts = [
