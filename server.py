@@ -1,13 +1,33 @@
-"""Homelab FastMCP Aggregator.
+"""Homelab FastMCP Aggregator — DEPRECATED.
 
-Reemplaza al mcp-router Go con FastMCP Python.
-Monta downstream MCPs con namespacing automático.
+This module is the pre-rename aggregator that preceded the Mimir
+framework. It is kept in the v0.1.0 wheel so the legacy test suite
+(``tests/test_coverage_gaps.py``, ``tests/test_critical.py``,
+``tests/test_security*.py``) still imports `_parse_env_value` and
+`native_tools.*`. The supported entry point is ``router.py`` (CLI:
+``mimir``) — see ``docs/ARCHITECTURE.md``.
+
+Removal is tracked under the Fase 8 cleanup milestone. The previous
+duplicate ``server.legacy.py`` (byte-identical to this file) was
+removed in the same audit pass (VULN-01).
+
+Importing this module emits a :class:`DeprecationWarning` so operators
+who arrived here by typo / outdated docs see a clear signal to switch.
 """
 import logging
 import os
 import sys
+import warnings
 from datetime import datetime
 from pathlib import Path
+
+warnings.warn(
+    "server.py is the deprecated pre-rename aggregator. Use 'mimir' "
+    "(router.py) — see docs/ARCHITECTURE.md. This module will be "
+    "removed in the Fase 8 cleanup release.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from fastmcp import FastMCP
 from fastmcp.server import create_proxy
