@@ -799,16 +799,18 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
-    { name = "paramiko" },
-    { name = "pygithub" },
-    { name = "pyserial" },
     { name = "pyyaml" },
-    { name = "requests" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "ruff" },
+]
+legacy = [
+    { name = "paramiko" },
+    { name = "pygithub" },
+    { name = "pyserial" },
+    { name = "requests" },
 ]
 test = [
     { name = "pytest" },
@@ -819,17 +821,17 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=3.0.0" },
-    { name = "paramiko", specifier = ">=4.0.0" },
-    { name = "pygithub", specifier = ">=2.3.0" },
-    { name = "pyserial", specifier = ">=3.5" },
+    { name = "paramiko", marker = "extra == 'legacy'", specifier = ">=4.0.0" },
+    { name = "pygithub", marker = "extra == 'legacy'", specifier = ">=2.3.0" },
+    { name = "pyserial", marker = "extra == 'legacy'", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "requests", specifier = ">=2.31.0" },
+    { name = "requests", marker = "extra == 'legacy'", specifier = ">=2.31.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
 ]
-provides-extras = ["test", "dev"]
+provides-extras = ["test", "dev", "legacy"]
 
 [[package]]
 name = "more-itertools"
