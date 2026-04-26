@@ -392,6 +392,22 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
                     "execute=true requires [security].allow_plugin_install = true "
                     "in router.toml; current config forbids permissive installs"
                 )
+            if execute:
+                # Security-relevant action: log a high-visibility warning
+                # to stderr AND a dedicated audit entry so operators can
+                # spot every executed install on a single grep, even when
+                # the call returned status=ok.
+                _log.warning(
+                    "SECURITY: router executing plugin install (source=%s)", source
+                )
+                if state.cfg.audit_enabled:
+                    audit.log_tool_call(
+                        plugin="router",
+                        tool="router_install_plugin",
+                        args=args,
+                        duration_ms=0.0,
+                        status="security_event:plugin_install_executed",
+                    )
             result = plugin_mgmt.install_plugin(
                 source, state.cfg.plugin_dir, execute=bool(execute)
             )
@@ -418,6 +434,19 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
                     "execute=true requires [security].allow_plugin_install = true "
                     "in router.toml; current config forbids permissive removes"
                 )
+            if execute:
+                # Same security-event channel as router_install_plugin.
+                _log.warning(
+                    "SECURITY: router executing plugin remove (name=%s)", name
+                )
+                if state.cfg.audit_enabled:
+                    audit.log_tool_call(
+                        plugin="router",
+                        tool="router_remove_plugin",
+                        args=args,
+                        duration_ms=0.0,
+                        status="security_event:plugin_remove_executed",
+                    )
             result = plugin_mgmt.remove_plugin(
                 name, state.cfg.plugin_dir, execute=bool(execute)
             )
