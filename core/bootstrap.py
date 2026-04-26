@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,41 @@ from core.loader import LoadReport
 
 _VAULT_FILENAME = "router_vault.md"
 _REF_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+
+
+def _atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
+    """Write ``text`` to ``path`` atomically (write + fsync + rename).
+
+    Truncating ``path`` directly with ``write_text`` left it half-written if
+    the process died mid-flush. Writing to a sibling tempfile and renaming
+    is atomic on POSIX and near-atomic on Windows (``os.replace``).
+    """
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix=".tmp-", suffix=".swap"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                # fsync may not be supported on every FS (e.g. some SMB
+                # mounts). Best-effort; the rename below is what gives the
+                # atomic guarantee.
+                pass
+        if mode is not None:
+            try:
+                os.chmod(tmp, mode)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def router_status(
@@ -203,13 +239,14 @@ def router_add_credential(
             if not line.startswith(f"{ref}=")
         ]
     existing_lines.append(f"{ref}={value}")
-    vault_file.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
-
-    try:
-        os.chmod(vault_file, 0o600)
-    except OSError:
-        # Windows doesn't implement POSIX modes the same way.
-        pass
+    # Atomic write keeps the vault file consistent if the process dies
+    # mid-flush; previously a crash between truncate and close left the
+    # vault empty or half-written.
+    _atomic_write_text(
+        vault_file,
+        "\n".join(existing_lines) + "\n",
+        mode=0o600,
+    )
 
     preview = (value[:4] + "****") if len(value) > 8 else "*" * len(value)
     return {"ok": True, "ref": ref, "preview": preview, "file": str(vault_file)}
