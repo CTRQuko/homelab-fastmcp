@@ -23,14 +23,6 @@ classifiers = [
 dependencies = [
   "fastmcp>=3.0.0",
   "pyyaml>=6.0",
-  # The four below are still needed because tests/ exercises the
-  # legacy server.py + native_tools/ which use them. Once Fase 8
-  # cleanup deletes those, these deps move to an optional ``legacy``
-  # extra (or get dropped entirely if no consumer remains).
-  "requests>=2.31.0",
-  "pygithub>=2.3.0",
-  "paramiko>=4.0.0",
-  "pyserial>=3.5",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +33,15 @@ test = [
 ]
 dev = [
   "ruff>=0.6",
+]
+# Required only when the deprecated server.py / native_tools/ are used.
+# Will be dropped entirely once Fase 8 cleanup removes the legacy aggregator.
+# Install with: uv sync --extra legacy   (or pip install mimir-mcp[legacy])
+legacy = [
+  "requests>=2.31.0",
+  "pygithub>=2.3.0",
+  "paramiko>=4.0.0",
+  "pyserial>=3.5",
 ]
 
 [project.scripts]
