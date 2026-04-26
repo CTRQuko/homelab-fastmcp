@@ -3,6 +3,11 @@
 Fire-and-forget: failures never bubble up to the caller. Each line is a JSON
 object with timestamp, plugin, tool, arguments hash, duration and status, so
 log rotation tools and external parsers can consume it uniformly.
+
+Rotation: when the active log exceeds ``_MAX_LOG_SIZE`` bytes, it is
+rotated to ``audit.log.1`` (older backups shifted outward, oldest beyond
+``_BACKUP_COUNT`` deleted). This is best-effort and silent — never blocks
+a tool call.
 """
 from __future__ import annotations
 
@@ -13,6 +18,11 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+
+# Rotation tunables. Defaults: 10 MB per log file, 7 backups kept (~1
+# week at moderate use). Operators can override via env if needed.
+_MAX_LOG_SIZE = int(os.environ.get("MIMIR_AUDIT_MAX_BYTES", str(10 * 1024 * 1024)))
+_BACKUP_COUNT = int(os.environ.get("MIMIR_AUDIT_BACKUP_COUNT", "7"))
 
 def _resolve_default_audit_path() -> Path:
     """Pick the audit log path with backward-compat for the old name.
@@ -51,6 +61,46 @@ def _hash_args(args: Any) -> str:
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
+def _rotate_if_needed(target: Path) -> None:
+    """Best-effort size-based rotation; never raises.
+
+    Called inline by :func:`log_tool_call` before the append so the active
+    file stays under :data:`_MAX_LOG_SIZE`. The previous version of this
+    module promised "rotation is daily by date" in the docs but never
+    implemented it — long-running operators saw the log grow indefinitely.
+    """
+    try:
+        if target.stat().st_size < _MAX_LOG_SIZE:
+            return
+    except OSError:
+        return
+    try:
+        # Drop the oldest backup if we are at the cap, then shift each
+        # backup one slot outward (.6 → .7, .5 → .6, …, .1 → .2).
+        oldest = target.with_name(f"{target.name}.{_BACKUP_COUNT}")
+        if oldest.exists():
+            try:
+                oldest.unlink()
+            except OSError:
+                pass
+        for i in range(_BACKUP_COUNT - 1, 0, -1):
+            src = target.with_name(f"{target.name}.{i}")
+            dst = target.with_name(f"{target.name}.{i + 1}")
+            if src.exists():
+                try:
+                    src.replace(dst)
+                except OSError:
+                    pass
+        # Move the active log into slot 1. The next log_tool_call recreates
+        # the active file.
+        try:
+            target.replace(target.with_name(f"{target.name}.1"))
+        except OSError:
+            pass
+    except OSError:
+        return
+
+
 def log_tool_call(
     plugin: str,
     tool: str,
@@ -72,6 +122,7 @@ def log_tool_call(
             "status": status,
         }
         with _lock:
+            _rotate_if_needed(target)
             with target.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
