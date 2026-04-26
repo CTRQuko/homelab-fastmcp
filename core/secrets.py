@@ -18,11 +18,14 @@ Values are never logged. :func:`mask` returns a redacted form for logs.
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import re
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 def _platform_default_home() -> Path:
     """Return the default Mimir home dir when no env var is set.
@@ -137,12 +140,17 @@ def _from_md_files(key: str) -> str | None:
             except OSError:
                 continue
     if duplicates:
-        warnings.warn(
-            f"Secret '{key}' has {duplicates + 1} divergent definitions; "
-            "using first match.",
-            UserWarning,
-            stacklevel=3,
+        # Both channels deliberately. UserWarning keeps backward compat for
+        # tests / tooling that filter on warnings; logger.error guarantees
+        # the operator sees the message on stderr even if warnings are
+        # silenced (which has happened with default filterwarnings).
+        msg = (
+            f"Secret '{key}' has {duplicates + 1} divergent definitions in "
+            f"secrets/*.md; using first match. Consolidate the file to remove "
+            f"the ambiguity."
         )
+        warnings.warn(msg, UserWarning, stacklevel=3)
+        _log.error("%s", msg)
     return found
 
 
