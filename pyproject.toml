@@ -34,15 +34,6 @@ test = [
 dev = [
   "ruff>=0.6",
 ]
-# Required only when the deprecated server.py / native_tools/ are used.
-# Will be dropped entirely once Fase 8 cleanup removes the legacy aggregator.
-# Install with: uv sync --extra legacy   (or pip install mimir-mcp[legacy])
-legacy = [
-  "requests>=2.31.0",
-  "pygithub>=2.3.0",
-  "paramiko>=4.0.0",
-  "pyserial>=3.5",
-]
 
 [project.scripts]
 mimir = "router:main"
@@ -59,19 +50,12 @@ build-backend = "setuptools.build_meta"
 
 # router.py is the single-file entry point — declared as a top-level
 # module so `mimir = "router:main"` resolves after install.
-#
-# server.py / native_tools/ are kept in the repo for the legacy test
-# suite (tests/test_critical.py, tests/test_coverage_gaps.py,
-# tests/test_security*.py) but are NOT packaged in the wheel from
-# v0.2.0 onwards. Tracked for full removal under the Fase 8 cleanup
-# release. See docs/security/audit-2026-04-26-1242.md § VULN-01.
 [tool.setuptools]
 py-modules = ["router"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["core*"]
-exclude = ["native_tools*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
