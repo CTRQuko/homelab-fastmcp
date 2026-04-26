@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-04-26 — Fase 8 cleanup + keyring (MVP) + plugin scaffolder
+
+This release closes the Fase 8 cleanup promised in v0.2.0 and adds two
+new capabilities: OS keyring as a credential source, and a tool to
+scaffold new plugin manifests from MCP. No new breaking changes for
+existing API consumers; the additions are additive.
+
+### Added
+
+- **OS keyring as credential source.** `core.secrets` now resolves
+  credentials via the OS keyring (Windows Credential Manager / macOS
+  Keychain / secret-service on Linux) under service name `mimir`.
+  Resolution order is **env → keyring → vault file → .env**. The
+  `keyring` package is imported lazily, and any failure (missing
+  backend, headless session, broken installation) falls through
+  silently to the next source. Operators in unattended environments
+  see no behaviour change.
+- **`router_add_credential` mirrors writes to keyring.** After the
+  vault file write, the router also calls `keyring.set_password` for
+  the same ref/value. Returned dict gains a `keyring: bool` field so
+  callers can see whether the mirror landed. Failure is non-fatal;
+  the vault file remains the authoritative copy on disk.
+- **`router_scaffold_plugin(name, command, args, credential_refs,
+  description)` MCP tool.** Generates `plugins/<name>/plugin.toml`
+  from arguments. Refuses to overwrite an existing directory. Reuses
+  the same name validation and path-resolution defences as
+  `router_install_plugin`. **Does not** create `server.py` — that is
+  the plugin's responsibility (or the upstream MCP repo's). After
+  scaffolding, restart Mimir to discover the new plugin. See
+  `docs/plugin-contract.md` § "Scaffolding a new plugin".
+
+### Removed
+
+- **`server.py` and `native_tools/`** (the pre-rename aggregator)
+  deleted from the source tree. The four tests that imported from
+  them moved to `tests/legacy/` (already excluded from the active
+  suite by pyproject.toml `norecursedirs`).
+- **`[project.optional-dependencies].legacy` extra removed**:
+  `paramiko`, `pygithub`, `requests`, `pyserial` had no consumer
+  in the framework anymore. `uv.lock` shrinks accordingly.
+- **Transitional comments and `exclude = ["native_tools*"]`** in
+  `[tool.setuptools.packages.find]` — no longer needed once the
+  files are gone.
+
+### Changed
+
+- **Default `dependencies` adds `keyring>=25.0`** for the new
+  resolution layer above. Pure-Python on its minimum backends.
+- **Active test suite shrinks to 219 tests** (was 280 with the
+  legacy files). The pre-existing failure
+  `test_github_client_anonymous_emits_warning` lived in the legacy
+  set and disappears from the active count.
+- **`docs/security-model.md` Layer 3** updated to describe the new
+  resolution chain and lazy-import discipline.
+- **`docs/plugin-contract.md`** gains a "Scaffolding a new plugin"
+  section.
+
+### Migration
+
+No required migration. Existing vault files keep working; nothing
+needs to be rewritten. The keyring is additive — operators who
+prefer not to use it can ignore the layer entirely (env vars and
+the vault file still take precedence in the documented order).
+
+If your CI / Docker image was installing `mimir-mcp[legacy]` to use
+the deprecated aggregator, that extra is gone. Pin v0.2.x or use a
+source checkout if you still need `server.py` / `native_tools/`.
+
 ## [0.2.0] — 2026-04-26 — security hardening from audit 2026-04-26-1242
 
 This release closes the nine findings of the post-skill-fix red-team
