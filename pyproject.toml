@@ -23,6 +23,11 @@ classifiers = [
 dependencies = [
   "fastmcp>=3.0.0",
   "pyyaml>=6.0",
+  # OS keyring (Windows Credential Manager / macOS Keychain /
+  # secret-service Linux). Lazy-imported in core.secrets and used
+  # as an additional credential source between env vars and the
+  # vault file. Pure-Python on its minimum backends; safe to ship.
+  "keyring>=25.0",
 ]
 
 [project.optional-dependencies]

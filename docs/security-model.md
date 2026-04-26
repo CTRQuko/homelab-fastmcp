@@ -44,8 +44,14 @@ by plugins. They are requested through
 
 1. Verifies the plugin's manifest declares a `credential_refs` pattern
    matching `ref`.
-2. Looks up the value in this order: env var → vault file
-   (`$MIMIR_HOME/secrets/router_vault.md`) → miss.
+2. Looks up the value in this order: env var → **OS keyring** (Windows
+   Credential Manager / macOS Keychain / secret-service on Linux,
+   under service name `mimir`) → vault file
+   (`$MIMIR_HOME/secrets/router_vault.md`) → `.env` → miss. The
+   keyring source is imported lazily and any failure (no backend,
+   headless, broken installation) falls through silently to the
+   vault file — operators in unattended environments see no
+   behaviour change.
 3. Records the access in audit (hash of ref only).
 
 Writes go through `router_add_credential`, which:

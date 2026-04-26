@@ -7,11 +7,15 @@ manifest authorises the reference.
 
 Resolution order for a credential value:
 
-1. Process environment variable (``os.environ``)
-2. ``<MIMIR_HOME>/secrets/*.md`` files (lines ``KEY=value``;
+1. Process environment variable (``os.environ``).
+2. **OS keyring** (Windows Credential Manager / macOS Keychain /
+   secret-service on Linux), under service name ``mimir``. Imported
+   lazily so missing/broken backends never block startup; failures
+   fall through to the next source silently.
+3. ``<MIMIR_HOME>/secrets/*.md`` files (lines ``KEY=value``;
    ``<MIMIR_HOME>/.config/secrets/*.md`` is also scanned for legacy
-   layouts)
-3. ``.env`` at the framework root (fallback)
+   layouts).
+4. ``.env`` at the framework root (fallback).
 
 Values are never logged. :func:`mask` returns a redacted form for logs.
 """
@@ -109,9 +113,45 @@ class PluginContext:
         return any(fnmatch.fnmatchcase(ref, pat) for pat in self.credential_patterns)
 
 
+_KEYRING_SERVICE = "mimir"
+
+
 def _from_env(key: str) -> str | None:
     val = os.environ.get(key, "").strip()
     return val or None
+
+
+def _from_keyring(key: str) -> str | None:
+    """Return ``key`` from the OS keyring under service ``mimir``.
+
+    The ``keyring`` package is imported lazily so an environment
+    where it cannot initialise (headless Linux without dbus, broken
+    backend installation) does not break Mimir startup. Any
+    exception during lookup is swallowed and ``None`` returned, so
+    the next resolution source (vault file, .env) takes over.
+    """
+    try:
+        import keyring
+        val = keyring.get_password(_KEYRING_SERVICE, key)
+        return val if val else None
+    except Exception:
+        return None
+
+
+def set_keyring(key: str, value: str) -> bool:
+    """Best-effort write of ``value`` to the OS keyring under ``mimir``.
+
+    Returns ``True`` on success, ``False`` if the keyring backend
+    refuses or the package is unavailable. Caller is expected to
+    treat the boolean as advisory: the vault file write should be
+    the authoritative copy on disk.
+    """
+    try:
+        import keyring
+        keyring.set_password(_KEYRING_SERVICE, key, value)
+        return True
+    except Exception:
+        return False
 
 
 def _from_md_files(key: str) -> str | None:
@@ -184,7 +224,12 @@ def _from_dotenv(key: str) -> str | None:
 
 
 def _resolve(key: str) -> str | None:
-    return _from_env(key) or _from_md_files(key) or _from_dotenv(key)
+    return (
+        _from_env(key)
+        or _from_keyring(key)
+        or _from_md_files(key)
+        or _from_dotenv(key)
+    )
 
 
 def get_credential(ref: str, ctx: PluginContext) -> str:

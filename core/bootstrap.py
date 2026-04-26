@@ -248,5 +248,18 @@ def router_add_credential(
         mode=0o600,
     )
 
+    # Best-effort mirror to the OS keyring. If the backend is available
+    # the next read of `ref` returns the keyring value before falling
+    # back to the vault file. If it fails (no backend, headless), the
+    # vault file remains the source of truth — operator notices nothing.
+    from core.secrets import set_keyring  # lazy: avoid module-load cycles
+    keyring_ok = set_keyring(ref, value)
+
     preview = (value[:4] + "****") if len(value) > 8 else "*" * len(value)
-    return {"ok": True, "ref": ref, "preview": preview, "file": str(vault_file)}
+    return {
+        "ok": True,
+        "ref": ref,
+        "preview": preview,
+        "file": str(vault_file),
+        "keyring": keyring_ok,
+    }
