@@ -76,11 +76,15 @@ class SqliteMemory(MemoryBackend):
         return entry_id
 
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        like = f"%{query}%"
+        # Escape LIKE wildcards (% and _) so user queries cannot widen the
+        # match silently. A query of "%" or "_" used to return everything;
+        # now it matches a literal % or _ in stored content.
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT id, content, tags, created_at FROM entries "
-                "WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?",
+                "WHERE content LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT ?",
                 (like, limit),
             ).fetchall()
         return [
