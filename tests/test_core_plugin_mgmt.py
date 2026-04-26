@@ -352,3 +352,103 @@ def test_list_missing_plugins_dir(tmp_path):
     """A missing plugins/ directory isn't an error — the router just
     hasn't had any plugins installed yet."""
     assert list_plugins(tmp_path / "does-not-exist") == []
+
+
+# ---------------------------------------------------------------------------
+# scaffold_plugin
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_plugin_generates_parse_able_manifest(tmp_path):
+    """A scaffolded manifest must be readable by parse_manifest."""
+    from core.loader import parse_manifest
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+
+    result = plugin_mgmt.scaffold_plugin(
+        "demo",
+        plugins_dir,
+        runtime_command="uv",
+        runtime_args=["run", "demo-mcp"],
+        credential_refs=["DEMO_*"],
+        description="A demo plugin",
+    )
+
+    assert result["name"] == "demo"
+    assert (plugins_dir / "demo" / "plugin.toml").is_file()
+
+    manifest = parse_manifest(plugins_dir / "demo" / "plugin.toml")
+    assert manifest.name == "demo"
+    assert manifest.version == "0.1.0"
+    assert manifest.enabled is True
+    assert manifest.runtime["command"] == "uv"
+    assert manifest.runtime["args"] == ["run", "demo-mcp"]
+    assert manifest.security["credential_refs"] == ["DEMO_*"]
+
+
+def test_scaffold_plugin_refuses_existing_dir(tmp_path):
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / "taken").mkdir()
+
+    with pytest.raises(plugin_mgmt.PluginMgmtError):
+        plugin_mgmt.scaffold_plugin(
+            "taken", plugins_dir, runtime_command="python"
+        )
+
+
+def test_scaffold_plugin_rejects_invalid_names(tmp_path):
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+
+    bad_names = ["../escape", "Foo", "foo bar", "foo/bar", "", "1foo"]
+    for name in bad_names:
+        with pytest.raises(plugin_mgmt.PluginMgmtError):
+            plugin_mgmt.scaffold_plugin(
+                name, plugins_dir, runtime_command="python"
+            )
+
+
+def test_scaffold_plugin_rejects_empty_runtime_command(tmp_path):
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+
+    with pytest.raises(plugin_mgmt.PluginMgmtError):
+        plugin_mgmt.scaffold_plugin("demo", plugins_dir, runtime_command="")
+    with pytest.raises(plugin_mgmt.PluginMgmtError):
+        plugin_mgmt.scaffold_plugin("demo", plugins_dir, runtime_command="   ")
+
+
+def test_scaffold_plugin_handles_special_chars_in_args(tmp_path):
+    """Args with quotes, backslashes, newlines must be escaped properly."""
+    from core.loader import parse_manifest
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+
+    plugin_mgmt.scaffold_plugin(
+        "tricky",
+        plugins_dir,
+        runtime_command="python",
+        runtime_args=['arg with "quotes"', "arg\\with\\back", "with\nnewline"],
+    )
+
+    manifest = parse_manifest(plugins_dir / "tricky" / "plugin.toml")
+    assert manifest.runtime["args"] == [
+        'arg with "quotes"',
+        "arg\\with\\back",
+        "with\nnewline",
+    ]
+
+
+def test_scaffold_plugin_default_credential_refs_empty(tmp_path):
+    from core.loader import parse_manifest
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+
+    plugin_mgmt.scaffold_plugin(
+        "noauth", plugins_dir, runtime_command="python"
+    )
+
+    manifest = parse_manifest(plugins_dir / "noauth" / "plugin.toml")
+    assert manifest.security["credential_refs"] == []
+    assert manifest.runtime["args"] == []

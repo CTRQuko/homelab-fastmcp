@@ -121,3 +121,39 @@ refusing to start.
 the previous run. On each `reconcile()` the router reports `added`,
 `removed`, and `unchanged`. Dropping in a new plugin directory or deleting
 an existing one is visible at next startup — no restart flag needed.
+
+## Scaffolding a new plugin
+
+The `router_scaffold_plugin` MCP tool generates a minimal `plugin.toml`
+skeleton at `plugins/<name>/`. The arguments map to the sections above:
+
+```text
+router_scaffold_plugin(
+    name="my_plugin",
+    command="uv",
+    args=["run", "my-plugin-mcp"],
+    credential_refs=["MY_PLUGIN_*"],
+    description="Optional one-line summary for router_status output",
+)
+```
+
+Result: `plugins/my_plugin/plugin.toml` written with `[plugin]`,
+`[runtime]`, `[security]`, `[tools]` sections; the fields reserved for
+future enforcement (`inventory_access`, `network_dynamic`,
+`filesystem_*`, `exec`) emitted as permissive defaults with disclaimer
+comments inline; `enabled = true` by default.
+
+The tool **does not write `server.py`** — that is the plugin's
+responsibility. Either drop your code into `plugins/my_plugin/` matching
+the runtime command, or use `router_install_plugin` first to clone an
+upstream MCP repo and then scaffold the manifest on top.
+
+After scaffolding, restart Mimir so the new plugin is picked up by
+discovery. Add the plugin name to the active profile's
+`enabled_plugins` list to graduate it from `disabled_by_profile` to
+`ok` / `pending_setup`.
+
+The same regex used elsewhere (`^[a-z][a-z0-9_-]{0,63}$`) validates
+`name`. Path traversal attempts and uppercase / whitespace are
+rejected. The tool refuses to overwrite an existing `plugins/<name>/`
+directory.

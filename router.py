@@ -485,6 +485,45 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
         return _timed("router_disable_plugin", run, args)
 
     @mcp.tool
+    def router_scaffold_plugin(
+        name: str,
+        command: str,
+        args: list[str] | None = None,
+        credential_refs: list[str] | None = None,
+        description: str | None = None,
+    ) -> dict:
+        """Create a new plugin manifest skeleton at ``plugins/<name>/``.
+
+        Generates ``plugin.toml`` with the canonical sections filled
+        from the arguments. Refuses if the directory already exists.
+        Does NOT create ``server.py`` — provide it separately or
+        clone an MCP repo with its own entry. After this tool
+        succeeds, restart Mimir to discover the new plugin.
+
+        ``name`` must be lowercase alnum + ``-`` / ``_`` (1–64
+        chars). ``command`` is what the router launches (e.g.
+        ``uv``, ``uvx``, ``python``, ``node``). ``args`` is the
+        list of arguments to that command (use the literal
+        ``{plugin_dir}`` if you need the resolved plugin path).
+        ``credential_refs`` is a list of fnmatch patterns the
+        plugin's subprocess is allowed to receive (e.g.
+        ``["MY_PLUGIN_*"]``).
+        """
+        args_for_audit = {"name": name, "command": command}
+
+        def run() -> dict:
+            return plugin_mgmt.scaffold_plugin(
+                name,
+                state.cfg.plugin_dir,
+                runtime_command=command,
+                runtime_args=args,
+                credential_refs=credential_refs,
+                description=description,
+            )
+
+        return _timed("router_scaffold_plugin", run, args_for_audit)
+
+    @mcp.tool
     def router_list_plugins() -> dict:
         """List every plugin discovered under ``plugins/`` with detail.
 
