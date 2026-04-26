@@ -16,7 +16,7 @@ and exercised by `tests/test_integration_e2e.py`.
 ## Step 0 — Install and start
 
 ```bash
-pip install mimir-mcp
+pip install mimir-router-mcp
 # or, from a checkout: uv run python router.py
 ```
 

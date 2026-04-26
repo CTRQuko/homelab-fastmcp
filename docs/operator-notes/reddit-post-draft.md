@@ -201,7 +201,7 @@ answer technical questions.
       guided onboarding". (Done.)
 - [ ] Release notes on GitHub release link to quickstart.md.
       (Done.)
-- [ ] PyPI URL works → `pip install mimir-mcp`. (Pending until
+- [ ] PyPI URL works → `pip install mimir-router-mcp`. (Pending until
       `uv publish` runs with credentials.)
 - [ ] CI badge on README is green. (Will be after `main` push and
       first CI run.)

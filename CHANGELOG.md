@@ -11,8 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This release closes the Fase 8 cleanup promised in v0.2.0 and adds two
 new capabilities: OS keyring as a credential source, and a tool to
-scaffold new plugin manifests from MCP. No new breaking changes for
-existing API consumers; the additions are additive.
+scaffold new plugin manifests from MCP.
+
+> **Renamed on PyPI: `mimir-mcp` → `mimir-router-mcp`.** The original
+> name was claimed (without releases) by another account before this
+> project's first publish. The framework, the CLI command (`mimir`),
+> the importable Python module (`router`), the GitHub repo
+> (`CTRQuko/mimir-mcp`) and the brand all stay as "Mimir" — only the
+> string used by `pip` / `uv` to fetch the wheel changes. From v0.3.0
+> onwards, install with `pip install mimir-router-mcp` /
+> `uv add mimir-router-mcp`.
 
 ### Added
 
@@ -110,7 +118,7 @@ under **Breaking changes** below.
 - **Wheel no longer ships the legacy `server.py` aggregator nor
   `native_tools/`.** The pre-rename aggregator and its native tool
   helpers are still present in the source repo to keep the legacy
-  test suite working locally, but `pip install mimir-mcp` only
+  test suite working locally, but `pip install mimir-router-mcp` only
   delivers `router` + `core/`. Operators of the deprecated aggregator
   must keep using a source checkout until the Fase 8 cleanup release.
   Reference: `docs/security/audit-2026-04-26-1242.md` § VULN-01.

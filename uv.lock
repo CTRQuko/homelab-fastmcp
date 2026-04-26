@@ -626,7 +626,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mimir-mcp"
+name = "mimir-router-mcp"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [

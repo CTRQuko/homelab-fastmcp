@@ -92,7 +92,7 @@ uv publish
 # In a throwaway venv
 uv venv /tmp/mimir-test
 source /tmp/mimir-test/bin/activate
-pip install mimir-mcp==0.X.Y
+pip install mimir-router-mcp==0.X.Y
 mimir --dry-run
 # Expected: "[mimir] router — profile: default"
 ```
