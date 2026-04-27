@@ -227,6 +227,45 @@ def test_credential_requirement_literal(tmp_path, monkeypatch):
     assert _check_requirement(req, inv) is True
 
 
+def test_credential_requirement_glob_matches_vault_not_env(tmp_path, monkeypatch):
+    """Credentials in the vault file (not in os.environ) must satisfy glob
+    requirements.  This is the regression test for the bug where
+    ``_check_requirement`` only iterated ``os.environ`` for glob patterns,
+    making vault-only credentials invisible to the plugin status check."""
+    import core.secrets as sec
+
+    from core.loader import _check_requirement, Requirement
+
+    # Credential lives in vault file, NOT in process environment.
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "vault.md").write_text(
+        "PROXMOX_PVE1_TOKEN=secret-value\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sec, "_SECRET_DIRS", [secrets_dir])
+    monkeypatch.delenv("PROXMOX_PVE1_TOKEN", raising=False)
+
+    req = Requirement(kind="credentials", detail={"pattern": "PROXMOX_*_TOKEN"}, prompt="")
+    inv = Inventory.load(tmp_path)
+    assert _check_requirement(req, inv) is True
+
+
+def test_credential_requirement_glob_absent_from_all_sources(tmp_path, monkeypatch):
+    """When no source has the credential the glob must return False."""
+    import core.secrets as sec
+
+    from core.loader import _check_requirement, Requirement
+
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    monkeypatch.setattr(sec, "_SECRET_DIRS", [secrets_dir])
+    monkeypatch.delenv("PROXMOX_PVE1_TOKEN", raising=False)
+
+    req = Requirement(kind="credentials", detail={"pattern": "PROXMOX_*_TOKEN"}, prompt="")
+    inv = Inventory.load(tmp_path)
+    assert _check_requirement(req, inv) is False
+
+
 def test_discover_quarantines_malformed_plugin(tmp_path):
     plugins = tmp_path / "plugins"
     _mk_plugin(

@@ -1,2 +1,9 @@
-# Default profile — only core tools. Plugins must be listed here to load.
-enabled_plugins: []
+# Default profile — Mimir's allowlist of plugins to mount.
+# Plugins listed here must exist under plugins/<name>/ with a valid
+# plugin.toml. Plugins discovered but not listed go to
+# `disabled_by_profile` status.
+enabled_plugins:
+  - echo
+  - homelab
+  - gpon
+  - uart

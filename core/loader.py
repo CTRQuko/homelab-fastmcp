@@ -57,7 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from core.inventory import Inventory
-from core.secrets import has_credential
+from core.secrets import has_credential, list_candidate_refs
 
 
 class ManifestError(ValueError):
@@ -225,8 +225,15 @@ def _check_requirement(req: Requirement, inventory: Inventory) -> bool:
         # Literal ref (no glob) -> probe directly.
         if "*" not in pattern and "?" not in pattern:
             return has_credential(pattern)
-        # Glob pattern -> accept if any env var matches AND resolves.
-        for name in os.environ:
+        # Glob pattern -> enumerate all known refs (os.environ + vault file +
+        # .env) and probe each. Using list_candidate_refs() instead of
+        # os.environ directly so credentials written via router_add_credential
+        # (vault file) are visible even when they are not in the process env.
+        # Keyring-only refs are not enumerable by design — the OS keyring API
+        # has no "list all keys" operation — but router_add_credential always
+        # writes to both vault file and keyring, so in practice vault coverage
+        # is sufficient.
+        for name in list_candidate_refs():
             if fnmatch.fnmatchcase(name, pattern) and has_credential(name):
                 return True
         return False
