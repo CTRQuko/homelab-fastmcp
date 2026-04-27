@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-04-27 — credential discovery bugfix
+
+### Fixed
+
+- **`_check_requirement` now scans vault file for glob patterns.**
+  The credential requirement check in `core/loader.py` was iterating
+  `os.environ` to discover matching keys for glob patterns (e.g.
+  `PROXMOX_*`). Credentials written via `router_add_credential` live in
+  `<MIMIR_HOME>/secrets/*.md` (vault file) and the OS keyring but are not
+  injected into the router process environment. The loop was replaced with
+  `list_candidate_refs()` from `core.secrets`, which aggregates
+  `os.environ` + vault file + `.env`. As a result, plugins with vault-only
+  credentials now correctly transition from `pending_setup` to `ok` after a
+  restart, without requiring any changes to the MCP client config.
+
+  Keyring-only refs remain non-discoverable by glob (the OS keyring API
+  offers no enumeration); literal patterns still probe all sources including
+  the keyring. In practice this limitation does not apply because
+  `router_add_credential` always writes to both the vault file and the
+  keyring.
+
+### Tests
+
+- Two new regression tests in `tests/test_core_loader.py`:
+  `test_credential_requirement_glob_matches_vault_not_env` and
+  `test_credential_requirement_glob_absent_from_all_sources`.
+  Active suite: **221 passed**.
+
 ## [0.3.0] — 2026-04-26 — Fase 8 cleanup + keyring (MVP) + plugin scaffolder
 
 This release closes the Fase 8 cleanup promised in v0.2.0 and adds two
