@@ -1,13 +1,15 @@
 # Framework — Deferrals
 
-Esta es la lista viva de lo que el rediseño modular **no** cubre todavía.
+Esta es la lista viva de lo que el framework Mimir **no** cubre todavía.
 Sirve para que cualquier sesión pueda retomar sin releer el plan entero.
 
-Última revisión: 2026-04-23 — tras commits Fase 5 (audit wrap),
-Fase 6b (mount), Fase 6c (tools filter middleware).
+Última revisión: 2026-05-01 — tras releases v0.2.0 (security hardening),
+v0.3.0 (Fase 8 cleanup + keyring + scaffolder) y v0.3.1 (loader credential
+discovery fix). Versión actual en PyPI como `mimir-router-mcp`.
 
 ## Hecho (ya no diferido)
 
+### Foundation (rediseño modular)
 - Montaje real de plugins vía `create_proxy` — `router._mount_plugin`
   (Fase 6b, commit `431f226`).
 - Router arranca FastMCP con `router_*` tools expuestas
@@ -22,21 +24,47 @@ Fase 6b (mount), Fase 6c (tools filter middleware).
   (on_list_tools + on_call_tool) — Fase 6c, commit `75c3c72`.
 - **Env propagation a plugin subprocess** con scoping Layer 3 entre
   plugins hermanos. `_plugin_subprocess_env` respeta
-  `credential_refs` y bloquea credenciales ajenas — Fase 6d. Resuelve
-  el gap que obligaba a `server.legacy.py` a hardcodear env por plugin
-  (ver `docs/MCP-DOWNSTREAM-ISSUES.md`).
+  `credential_refs` y bloquea credenciales ajenas — Fase 6d.
 - **`[runtime].command` + `args`** como alternativa a `[runtime].entry`
   — permite `uv run`, `uvx`, `node` etc. con `{plugin_dir}` como
   substitution portable. `cwd` del subprocess se fija a `manifest.path`.
-- **Cutover plan preparatorio** (Fase 7a): 7 manifests reales en
-  `docs/cutover/manifests/*/plugin.toml` (proxmox, linux, windows,
-  docker, unifi, uart, gpon) + `docs/cutover/README.md` con los pasos
-  exactos de Fase 7b y Fase 8, cubiertos por
-  `tests/test_cutover_manifests.py`.
 - `core/loader.tool_allowed` helper + `QuarantineEntry` para
   plugin.toml malformado.
 - `SqliteMemory` resuelve paths contra `router.ROOT`.
 - `[requires.hosts]` soporta `tag` filter.
+
+### Cutover y limpieza (v0.2.0 + v0.3.0)
+- **Audit 2026-04-26-1242 — 9 fixes de seguridad** aplicados en v0.2.0:
+  fail-closed de profiles malformados, audit log rotation, evento de
+  seguridad en plugin install/remove, atomic vault write, LIKE wildcards
+  escapados en `SqliteMemory.search`, duplicate-secret detection a stderr,
+  `server.py` DeprecationWarning, manifest fields documentados como
+  parsed-not-enforced, deps `paramiko/pygithub/requests/pyserial` movidas
+  a `[legacy]` extra. Doc en `docs/security/audit-2026-04-26-1242.md`.
+- **Fase 8 cleanup — completada en v0.3.0**: `server.py` y `native_tools/`
+  borrados del repo. Los 4 tests legacy movidos a `tests/legacy/`
+  (excluido de la suite activa por `pyproject.toml:norecursedirs`).
+  Extra `[legacy]` eliminado.
+- **Cutover plan preparatorio** (Fase 7a): 7 manifests reales en
+  `docs/cutover/manifests/*/plugin.toml` (proxmox, linux, windows,
+  docker, unifi, uart, gpon) + `docs/cutover/README.md` con los pasos
+  exactos, cubiertos por `tests/test_cutover_manifests.py`.
+
+### Features nuevas (v0.3.0 + v0.3.1)
+- **Keyring MVP**: `core.secrets` resuelve credenciales vía OS keyring
+  (Windows Credential Manager / macOS Keychain / secret-service Linux).
+  Orden: env → keyring → vault file → .env. `router_add_credential`
+  espeja al keyring tras el write al vault file. Fallback silencioso
+  si el backend no está disponible.
+- **`router_scaffold_plugin`**: tool MCP que genera
+  `plugins/<name>/plugin.toml` skeleton desde 4 args (name, command, args,
+  credential_refs). Reusa `_validate_plugin_name` y `_resolve_within`.
+  No crea `server.py`.
+- **Loader credential discovery via vault file** (FIXED v0.3.1):
+  `_check_requirement` en `core/loader.py` ahora usa `list_candidate_refs()`
+  de `core.secrets`, que agrega env + vault file + `.env`. Antes solo
+  iteraba `os.environ` y los plugins con credenciales en vault quedaban
+  en `pending_setup` para siempre. 2 tests regression añadidos.
 
 ## Diferido — runtime
 
@@ -51,15 +79,29 @@ Fase 6b (mount), Fase 6c (tools filter middleware).
   namespace, o el propio subprocess con permisos limitados); hacerlo
   in-process sería teatro de seguridad. Scheduled junto con el runtime
   sandbox, no antes.
-- **Core OS modules** — `windows`, `linux`, `shell`, `git`, `python`,
-  `node`. El plan los ubica en `core/`; hoy los que existen viven en
-  `native_tools/` y se usan vía `server.legacy.py`. La migración se
-  destrabará cuando Fase 7 empiece a mover plugins a repos separados.
+- **Schema validation `proxmox_nodes.json`** (gap detectado 2026-05-01):
+  hoy un IP wrong en el JSON degrada silenciosamente al plugin homelab —
+  los timeouts en runtime son confusos. Validar el JSON al boot del
+  plugin daría fallo loud + fix rápido. ~30 LOC + tests.
 
 ## Diferido — memoria
 
-- Backends `engram` y `claude_mem`. Solo hay `noop` y `sqlite`. La
-  interfaz `MemoryBackend` está lista — falta el adapter.
+- **Engram memory adapter** (decisión 2026-05-01: **opcional, no core**).
+  Implementar como extra `pip install mimir-router-mcp[engram]`,
+  configurado vía `router.toml [memory] backend = "engram"`. Default
+  sigue siendo `noop` o `sqlite`. Mimir ✕ engram permanecen ortogonales:
+  solo se cruzan si el operador lo pide explícitamente.
+- **`claude_mem` backend**. Same path: extra opcional, no core.
+
+## Diferido — divergencia manifest/runtime
+
+- **`plugins/homelab/plugin.toml` declara envvars granulares** (`PROXMOX_*_HOST`,
+  `PROXMOX_*_USER`, `PROXMOX_*_TOKEN`) pero el runtime real consume un único
+  archivo JSON aggregado vía `PROXMOX_NODES_FILE`. Funciona porque el glob
+  `PROXMOX_*` en `credential_refs` captura `PROXMOX_NODES_FILE` por
+  coincidencia léxica. Manifest actualizado el 2026-05-01 para reflejar
+  ambos paths (NODES_FILE preferido). Decisión definitiva (consolidar a
+  un solo path) queda diferida hasta extracción del plugin a su repo.
 
 ## Diferido — extracción y cutover
 
@@ -72,29 +114,27 @@ Fase 6b (mount), Fase 6c (tools filter middleware).
   explícito del operador.
 - **Fase 7c** (nativo): decidir destino de `native_tools/{github,
   tailscale,uart_detect}.py` — first-party en `core/` o micro-MCP
-  wrappeado. No bloquea Fase 8.
-- **Fase 7d**: `homelab-mcp` agrupa 4 plugins (proxmox + linux + windows
-  + docker). MVP acepta un único `plugin.toml` llamado `homelab` que
-  monta los 4 internamente; trocearlo en 4 repos o 4 manifests queda
-  para después.
-- **Fase 8**: apuntar Hermes (LXC 302 pve2) y Claude Desktop a `router.py`
-  en vez de `server.py`, validar que el set de tools coincide, y solo
-  entonces eliminar `server.legacy.py`, `native_tools/`.
-- **Fase 9**: README del framework, merge `refactor/modular-framework` →
-  `main`, push.
+  wrappeado. ⚠️ Estos archivos ya no existen post-Fase 8 cleanup; revisar
+  si los `core OS modules` (windows, linux, shell, git, python, node)
+  siguen en el plan o se eliminan del roadmap.
+- **Fase 7d**: `homelab-mcp` agrupa 4 sub-MCPs (`homelab-{proxmox,linux,
+  windows,docker}-mcp`). El manifest actual sólo monta el `proxmox` sub-MCP;
+  los otros 3 son inalcanzables vía mimir aunque el código existe en el
+  repo upstream. Trocear en 4 repos o 4 manifests queda para después.
+  **Impacto user-facing**: capa 2 (SSH+sudo) y operación Docker quedan
+  como flujos manuales en CLAUDE.md hasta que se monten los sub-MCPs.
+- **Fase 9**: README del framework, push final.
 
 ## Decisiones congeladas hasta Fase 7+
 
-- `server.py` legacy no se toca; su copia sigue en `server.legacy.py`.
 - `mcp-servers/homelab-mcp/` y `mcp-servers/gpon-mcp/` no se borran —
   Hermes y Claude Desktop todavía dependen de ellos.
 - Las configs de los clientes MCP no se modifican.
-- Branch `refactor/modular-framework` no se pushea hasta Fase 9.
 
 ## Estado de cobertura
 
-- 276 passed + 2 skipped (baseline de este rediseño era 112).
+- **221 passing** en suite activa (v0.3.1 baseline). El pre-existing fail
+  `test_github_client_anonymous_emits_warning` desapareció del cómputo
+  al moverse a `tests/legacy/` con la Fase 8 cleanup.
 - `router.py --dry-run` arranca limpio con 0 plugins, 0 hosts.
-- Security review pasado con 4 fixes (newline injection, disabled-plugin
-  widening, tomllib guard, `.md` col-0 strict parse) + Layer 5 tier 1
-  wireado.
+- Audit `2026-04-26-1242` cerrado en v0.2.0 (9 fixes aplicados).
