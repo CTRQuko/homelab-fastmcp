@@ -3,9 +3,10 @@
 Esta es la lista viva de lo que el framework Mimir **no** cubre todavía.
 Sirve para que cualquier sesión pueda retomar sin releer el plan entero.
 
-Última revisión: 2026-05-01 — tras releases v0.2.0 (security hardening),
-v0.3.0 (Fase 8 cleanup + keyring + scaffolder) y v0.3.1 (loader credential
-discovery fix). Versión actual en PyPI como `mimir-router-mcp`.
+Última revisión: 2026-05-02 — tras releases v0.2.0 (security hardening),
+v0.3.0 (Fase 8 cleanup + keyring + scaffolder), v0.3.1 (loader credential
+discovery fix) y v0.4.0 (engram HTTP backend). Versión actual en PyPI
+como `mimir-router-mcp`.
 
 ## Hecho (ya no diferido)
 
@@ -79,10 +80,10 @@ discovery fix). Versión actual en PyPI como `mimir-router-mcp`.
   namespace, o el propio subprocess con permisos limitados); hacerlo
   in-process sería teatro de seguridad. Scheduled junto con el runtime
   sandbox, no antes.
-- **Schema validation `proxmox_nodes.json`** (gap detectado 2026-05-01):
-  hoy un IP wrong en el JSON degrada silenciosamente al plugin homelab —
-  los timeouts en runtime son confusos. Validar el JSON al boot del
-  plugin daría fallo loud + fix rápido. ~30 LOC + tests.
+- ✅ **Schema validation `proxmox_nodes.json`** — IMPLEMENTADO en plugin
+  homelab v1.3.0 (no en framework — la validación es responsabilidad del
+  plugin, ya que el JSON es schema-específico del homelab). Fail-loud al
+  boot con mensaje claro. Item resuelto fuera del framework.
 
 ## Diferido — memoria
 
@@ -113,11 +114,11 @@ discovery fix). Versión actual en PyPI como `mimir-router-mcp`.
   (`docs/cutover/manifests/`) y el plan paso a paso está en
   `docs/cutover/README.md`. Requiere commits a repos externos ⇒ OK
   explícito del operador.
-- **Fase 7c** (nativo): decidir destino de `native_tools/{github,
-  tailscale,uart_detect}.py` — first-party en `core/` o micro-MCP
-  wrappeado. ⚠️ Estos archivos ya no existen post-Fase 8 cleanup; revisar
-  si los `core OS modules` (windows, linux, shell, git, python, node)
-  siguen en el plan o se eliminan del roadmap.
+- **Fase 7c** (nativo): ✅ RESUELTO por eliminación. `native_tools/{github,
+  tailscale,uart_detect}.py` se borraron en Fase 8 cleanup (v0.3.0). El
+  framework no incluye módulos OS nativos — todo lo que necesite primitives
+  del SO se implementa como plugin externo. Los `core OS modules` (windows,
+  linux, shell, git, python, node) ya NO están en el roadmap.
 - **Fase 7d**: `homelab-mcp` agrupa 4 sub-MCPs (`homelab-{proxmox,linux,
   windows,docker}-mcp`). El manifest actual sólo monta el `proxmox` sub-MCP;
   los otros 3 son inalcanzables vía mimir aunque el código existe en el
@@ -134,8 +135,9 @@ discovery fix). Versión actual en PyPI como `mimir-router-mcp`.
 
 ## Estado de cobertura
 
-- **221 passing** en suite activa (v0.3.1 baseline). El pre-existing fail
-  `test_github_client_anonymous_emits_warning` desapareció del cómputo
-  al moverse a `tests/legacy/` con la Fase 8 cleanup.
+- **238 passing** en suite activa (v0.4.0 baseline). +17 tests del
+  engram HTTP backend (`test_core_memory_engram.py`) sobre los 221 de
+  v0.3.1. El pre-existing fail `test_github_client_anonymous_emits_warning`
+  desapareció del cómputo al moverse a `tests/legacy/` con Fase 8 cleanup.
 - `router.py --dry-run` arranca limpio con 0 plugins, 0 hosts.
 - Audit `2026-04-26-1242` cerrado en v0.2.0 (9 fixes aplicados).
