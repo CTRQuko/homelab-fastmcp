@@ -86,12 +86,13 @@ discovery fix). Versión actual en PyPI como `mimir-router-mcp`.
 
 ## Diferido — memoria
 
-- **Engram memory adapter** (decisión 2026-05-01: **opcional, no core**).
-  Implementar como extra `pip install mimir-router-mcp[engram]`,
-  configurado vía `router.toml [memory] backend = "engram"`. Default
-  sigue siendo `noop` o `sqlite`. Mimir ✕ engram permanecen ortogonales:
-  solo se cruzan si el operador lo pide explícitamente.
-- **`claude_mem` backend**. Same path: extra opcional, no core.
+- ✅ **Engram memory adapter** — IMPLEMENTADO en v0.4.0 (2026-05-02).
+  `core/memory/engram.py` delega a `engram serve` HTTP API. Sin
+  dependencia adicional (urllib stdlib). Configuración en
+  `router.toml [memory] backend = "engram" project = "..."`. Default
+  sigue siendo `noop` (zero-config). Ver CHANGELOG v0.4.0 para detalles.
+- **`claude_mem` backend**. Same path que tuvo engram: pendiente
+  cuando aparezca un caso de uso concreto.
 
 ## Diferido — divergencia manifest/runtime
 

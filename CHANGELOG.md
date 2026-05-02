@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-02 — engram memory backend
+
+### Added
+
+- **`core.memory.engram.EngramMemory`** — backend que delega a un
+  `engram serve` local vía HTTP API (default `http://127.0.0.1:7437`).
+  Implementa los 5 métodos del `MemoryBackend` ABC (save, search, get,
+  update, delete) llamando a los endpoints REST de engram. Todo con
+  `urllib.request` (stdlib) — no añade ninguna dependencia.
+
+  Configuración en `router.toml`::
+
+      [memory]
+      backend = "engram"
+      project = "homelab"           # opcional pero recomendado — scopes
+                                    # las saves y permite que engram cree
+                                    # la session_id automáticamente
+      base_url = "http://127.0.0.1:7437"   # opcional, default mostrado
+      session_id = "mimir-router"          # opcional, default mostrado
+      timeout = 5                           # opcional, segundos
+
+  Comportamiento:
+  - **Init fail-loud**: si engram no responde a `/health`, el constructor
+    lanza `RuntimeError` con mensaje accionable. El operador ve el error
+    en `router_status` y puede arrancar `engram serve` o cambiar a
+    `noop`/`sqlite`.
+  - **Session auto-create**: si `project` está set, hace `POST /sessions`
+    al boot (engram lo trata como upsert). Si no, skipea con warning —
+    el primer save fallará con FK error claro y el operador sabrá que
+    debe añadir project.
+  - **Errores de tool propagados**: HTTPError y URLError durante save/
+    search/get/update/delete se convierten en `RuntimeError` con detalle
+    para no silenciar problemas.
+
+- **`load_backend()`** ahora reconoce `name == "engram"` y instancia el
+  adapter con la config dada.
+
+### Tests
+
+- **16 tests nuevos** en `tests/test_core_memory_engram.py`: init health
+  check (3 paths), save (4 cases con mock), search (2), get/update/
+  delete (3), errores HTTP/URL durante operaciones (2), factory (2).
+  Todos mockean `urllib.request.urlopen` para no tocar el engram local.
+- **`test_load_backend_unknown_raises`** actualizado: usaba "engram"
+  como nombre desconocido, ahora usa "does-not-exist".
+- **Suite total: 238 passing** (era 221 + 1 pre-existing fail).
+
+### Diseño
+
+Engram es la herramienta de memoria persistente que el operador ya usa
+desde Claude Code via MCP. Este adapter permite que **plugins de mimir**
+también deleguen su memoria a engram en lugar de re-implementar storage
+o usar sólo el sqlite local. Un plugin que quiera persistir state
+cross-sesión ahora puede pedir el backend al router (vía la
+infraestructura existente) y obtener una memoria centralizada que el
+operador ya cura.
+
+No-breaking: backends existentes (`noop`, `sqlite`) inalterados.
+
 ## [0.3.1] — 2026-04-27 — credential discovery bugfix
 
 ### Fixed

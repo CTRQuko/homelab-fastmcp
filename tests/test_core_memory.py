@@ -20,8 +20,10 @@ def test_load_backend_sqlite(tmp_path):
 
 
 def test_load_backend_unknown_raises():
+    # 'engram' was the placeholder previously; now it's a real backend.
+    # Use a definitely-non-existent name to test the "unknown" error path.
     with pytest.raises(ValueError, match="Unknown"):
-        load_backend("engram")
+        load_backend("does-not-exist")
 
 
 def test_noop_returns_empty():

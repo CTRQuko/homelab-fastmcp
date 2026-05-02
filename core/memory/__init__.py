@@ -46,4 +46,10 @@ def load_backend(name: str, config: dict[str, Any] | None = None) -> MemoryBacke
         from core.memory.sqlite import SqliteMemory
 
         return SqliteMemory(**config)
-    raise ValueError(f"Unknown memory backend '{name}'. Available: noop, sqlite")
+    if name == "engram":
+        from core.memory.engram import EngramMemory
+
+        return EngramMemory(**config)
+    raise ValueError(
+        f"Unknown memory backend '{name}'. Available: noop, sqlite, engram"
+    )
