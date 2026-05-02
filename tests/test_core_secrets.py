@@ -144,3 +144,106 @@ def test_resolve_refs_matching_empty_patterns(monkeypatch):
     credential_refs don't enumerate the whole vault."""
     monkeypatch.setenv("SOMETHING_SECRET", "x")
     assert secrets.resolve_refs_matching([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# _parse_env_value — parser for .env and vault values (quotes, comments)
+# ---------------------------------------------------------------------------
+
+def test_parse_env_value_handles_double_quotes():
+    """Double-quoted values strip the quotes and return the inner content."""
+    assert secrets._parse_env_value('"hello world"') == "hello world"
+
+
+def test_parse_env_value_handles_single_quotes():
+    """Single-quoted values behave the same."""
+    assert secrets._parse_env_value("'hello world'") == "hello world"
+
+
+def test_parse_env_value_strips_inline_comment():
+    """`value # comment` → "value". Tab-prefixed comments work too."""
+    assert secrets._parse_env_value("plain_value # this is ignored") == "plain_value"
+    assert secrets._parse_env_value("plain_value\t# tab-comment") == "plain_value"
+
+
+def test_parse_env_value_empty_string_returns_empty():
+    assert secrets._parse_env_value("") == ""
+    assert secrets._parse_env_value("   ") == ""
+
+
+def test_parse_env_value_unterminated_quote_returns_after_quote():
+    """Defensive: malformed `"value` (no closing quote) keeps the content."""
+    assert secrets._parse_env_value('"unterminated') == "unterminated"
+
+
+# ---------------------------------------------------------------------------
+# _from_dotenv — project .env lookup
+# ---------------------------------------------------------------------------
+
+def test_from_dotenv_returns_value_when_key_present(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("FOO=bar\nBAZ=\"quoted value\"\n", encoding="utf-8")
+    monkeypatch.setattr(secrets, "_PROJECT_ENV", env_file)
+    assert secrets._from_dotenv("FOO") == "bar"
+    assert secrets._from_dotenv("BAZ") == "quoted value"
+
+
+def test_from_dotenv_returns_none_when_key_absent(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("OTHER=value\n", encoding="utf-8")
+    monkeypatch.setattr(secrets, "_PROJECT_ENV", env_file)
+    assert secrets._from_dotenv("MISSING") is None
+
+
+def test_from_dotenv_returns_none_when_dotenv_missing(monkeypatch, tmp_path):
+    """Sin archivo .env → None silenciosamente, no excepción."""
+    monkeypatch.setattr(secrets, "_PROJECT_ENV", tmp_path / "nonexistent.env")
+    assert secrets._from_dotenv("ANY_KEY") is None
+
+
+# ---------------------------------------------------------------------------
+# _from_md_files — duplicate detection emits warning + log
+# ---------------------------------------------------------------------------
+
+def test_md_files_duplicate_keys_emit_warning(monkeypatch, tmp_path):
+    """Si dos .md tienen la misma key con valores divergentes, _from_md_files
+    avisa por warnings + log y devuelve la primera ocurrencia. Esto evita
+    que un cambio silencioso en uno de los archivos altere los lookups."""
+    import warnings
+
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    # Dos archivos con la misma key pero valor distinto.
+    (secrets_dir / "first.md").write_text("DUP_KEY=value-one\n", encoding="utf-8")
+    (secrets_dir / "second.md").write_text("DUP_KEY=value-two\n", encoding="utf-8")
+    monkeypatch.setattr(secrets, "_SECRET_DIRS", [secrets_dir])
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = secrets._from_md_files("DUP_KEY")
+
+    # Returns one of the values (whichever the glob enumerated first).
+    assert result in {"value-one", "value-two"}
+    # Avisa explícitamente sobre la divergencia.
+    assert any(issubclass(w.category, UserWarning) for w in caught)
+    assert any("divergent definitions" in str(w.message) for w in caught)
+
+
+def test_md_files_identical_duplicates_do_not_warn(monkeypatch, tmp_path):
+    """Si los valores son idénticos en ambos archivos, NO es divergencia —
+    el operador puede haber duplicado por accidente pero no hay ambigüedad
+    en el lookup. No debe avisar."""
+    import warnings
+
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "a.md").write_text("SAME_KEY=identical\n", encoding="utf-8")
+    (secrets_dir / "b.md").write_text("SAME_KEY=identical\n", encoding="utf-8")
+    monkeypatch.setattr(secrets, "_SECRET_DIRS", [secrets_dir])
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = secrets._from_md_files("SAME_KEY")
+
+    assert result == "identical"
+    assert not any(issubclass(w.category, UserWarning) for w in caught)
