@@ -1,8 +1,8 @@
 # Mimir
 
 [![CI](https://github.com/CTRQuko/mimir-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/CTRQuko/mimir-mcp/actions/workflows/ci.yml)
-[![PyPI version](https://img.shields.io/pypi/v/mimir-mcp.svg)](https://pypi.org/project/mimir-mcp/)
-[![Python versions](https://img.shields.io/pypi/pyversions/mimir-mcp.svg)](https://pypi.org/project/mimir-mcp/)
+[![PyPI version](https://img.shields.io/pypi/v/mimir-router-mcp.svg)](https://pypi.org/project/mimir-router-mcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/mimir-router-mcp.svg)](https://pypi.org/project/mimir-router-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 🇬🇧 You're reading the English version · 🇪🇸 [Léeme en español](README.es.md)
