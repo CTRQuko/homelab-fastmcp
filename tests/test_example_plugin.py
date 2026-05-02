@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.loader import parse_manifest, PluginManifest, PluginState
 import router as router_mod
+from core.loader import PluginManifest, PluginState, parse_manifest
 
 ROOT = Path(__file__).resolve().parent.parent
 ECHO_DIR = ROOT / "examples" / "echo-plugin"
@@ -102,9 +102,10 @@ def test_echo_plugin_discovered_by_reconcile(tmp_path):
     """End-to-end: drop the example plugin under a fresh plugin_dir
     and confirm ``reconcile`` treats it as a normal, mountable plugin.
     This is the exact path the router runs at startup."""
-    from core.loader import reconcile
-    from core.inventory import Inventory
     import shutil
+
+    from core.inventory import Inventory
+    from core.loader import reconcile
 
     plugins_dir = tmp_path / "plugins"
     plugins_dir.mkdir()

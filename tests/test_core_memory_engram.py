@@ -9,13 +9,12 @@ import io
 import json
 import urllib.error
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from core.memory import load_backend
 from core.memory.engram import EngramMemory
-
 
 # ---------------------------------------------------------------------------
 # Helpers — fake urllib response

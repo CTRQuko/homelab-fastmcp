@@ -83,7 +83,8 @@ def test_sqlite_relative_path_resolves_against_framework_root(tmp_path, monkeypa
     other.mkdir()
     monkeypatch.chdir(other)
 
-    b = SqliteMemory(path="config/mem.db")
+    # Constructor crea el DB file por side-effect; no necesitamos la instancia.
+    SqliteMemory(path="config/mem.db")
     # El fichero DB debe crearse bajo fake_root, no bajo other/.
     expected = fake_root / "config" / "mem.db"
     assert expected.exists()

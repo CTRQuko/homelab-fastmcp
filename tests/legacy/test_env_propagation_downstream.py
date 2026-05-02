@@ -121,7 +121,6 @@ def test_dotenv_wins_flag_overrides_external(monkeypatch, tmp_path, capsys):
 
     # Reproduce la lógica inline del bloque de carga con el flag activo
     import os
-    import sys
     _dotenv_wins = os.environ.get("HOMELAB_DOTENV_WINS", "0").strip() == "1"
     assert _dotenv_wins is True
 

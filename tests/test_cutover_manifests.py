@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from core.loader import parse_manifest
 import router as router_mod
+from core.loader import parse_manifest
 
 ROOT = Path(__file__).resolve().parent.parent
 CUTOVER_DIR = ROOT / "docs" / "operator-notes" / "cutover" / "manifests"

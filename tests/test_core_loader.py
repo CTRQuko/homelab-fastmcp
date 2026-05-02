@@ -201,7 +201,7 @@ def test_discover_skips_underscore_dirs(tmp_path):
 
 
 def test_credential_requirement_glob_matches_env(tmp_path, monkeypatch):
-    from core.loader import _check_requirement, Requirement
+    from core.loader import Requirement, _check_requirement
 
     monkeypatch.setenv("PROXMOX_PVE1_TOKEN", "abc")
     req = Requirement(kind="credentials", detail={"pattern": "PROXMOX_*_TOKEN"}, prompt="")
@@ -210,7 +210,7 @@ def test_credential_requirement_glob_matches_env(tmp_path, monkeypatch):
 
 
 def test_credential_requirement_glob_unmatched(tmp_path, monkeypatch):
-    from core.loader import _check_requirement, Requirement
+    from core.loader import Requirement, _check_requirement
 
     monkeypatch.delenv("PROXMOX_PVE1_TOKEN", raising=False)
     req = Requirement(kind="credentials", detail={"pattern": "ZZZZZ_*_TOKEN"}, prompt="")
@@ -219,7 +219,7 @@ def test_credential_requirement_glob_unmatched(tmp_path, monkeypatch):
 
 
 def test_credential_requirement_literal(tmp_path, monkeypatch):
-    from core.loader import _check_requirement, Requirement
+    from core.loader import Requirement, _check_requirement
 
     monkeypatch.setenv("LITERAL_TOKEN", "v")
     req = Requirement(kind="credentials", detail={"pattern": "LITERAL_TOKEN"}, prompt="")
@@ -233,8 +233,7 @@ def test_credential_requirement_glob_matches_vault_not_env(tmp_path, monkeypatch
     ``_check_requirement`` only iterated ``os.environ`` for glob patterns,
     making vault-only credentials invisible to the plugin status check."""
     import core.secrets as sec
-
-    from core.loader import _check_requirement, Requirement
+    from core.loader import Requirement, _check_requirement
 
     # Credential lives in vault file, NOT in process environment.
     secrets_dir = tmp_path / "secrets"
@@ -253,8 +252,7 @@ def test_credential_requirement_glob_matches_vault_not_env(tmp_path, monkeypatch
 def test_credential_requirement_glob_absent_from_all_sources(tmp_path, monkeypatch):
     """When no source has the credential the glob must return False."""
     import core.secrets as sec
-
-    from core.loader import _check_requirement, Requirement
+    from core.loader import Requirement, _check_requirement
 
     secrets_dir = tmp_path / "secrets"
     secrets_dir.mkdir()

@@ -1,6 +1,5 @@
 """Tests de seguridad: validación de inputs en tools nativas."""
 import pytest
-
 from native_tools.github import _validate_name, _validate_repo, _validate_state
 from native_tools.tailscale import _validate_device_id
 
