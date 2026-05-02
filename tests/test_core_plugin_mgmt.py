@@ -452,3 +452,201 @@ def test_scaffold_plugin_default_credential_refs_empty(tmp_path):
     manifest = parse_manifest(plugins_dir / "noauth" / "plugin.toml")
     assert manifest.security["credential_refs"] == []
     assert manifest.runtime["args"] == []
+
+
+# ---------------------------------------------------------------------------
+# parse_install_source — error paths
+# ---------------------------------------------------------------------------
+
+def test_parse_install_source_url_without_path_rejected():
+    """URL sin path (`https://github.com`) no se puede convertir en plugin."""
+    with pytest.raises(PluginMgmtError, match="not a valid URL"):
+        parse_install_source("https://")
+
+
+def test_parse_install_source_url_path_only_slash_rejected():
+    """URL con path vacío (`https://github.com/`) → no hay nombre derivable."""
+    with pytest.raises(PluginMgmtError, match="cannot derive plugin name"):
+        parse_install_source("https://github.com/")
+
+
+def test_parse_install_source_local_file_rejected(tmp_path):
+    """Local source debe ser directorio, no fichero."""
+    f = tmp_path / "single_file.txt"
+    f.write_text("not a plugin", encoding="utf-8")
+    with pytest.raises(PluginMgmtError, match="must be a directory"):
+        parse_install_source(str(f))
+
+
+# ---------------------------------------------------------------------------
+# _resolve_within — path traversal protection
+# ---------------------------------------------------------------------------
+
+def test_resolve_within_blocks_path_traversal(tmp_path):
+    """Un nombre que escape al parent (`../escape`) debe rechazarse.
+
+    Como `_validate_plugin_name` ya rechaza strings con `..`, hay que
+    construir un caso donde la resolución salga del plugins_dir por una
+    ruta indirecta. Aquí: plugins_dir es un symlink a un parent que está
+    fuera, lo que hace que `target.relative_to(plugins_dir)` falle."""
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    # Manual path-traversal bypass: meter manualmente en las internals.
+    # `_validate_plugin_name` valida el shape; aquí probamos que aunque
+    # alguien lo evite, `_resolve_within` aplica una segunda comprobación.
+    # Llamar la función con un name que pasaría validate pero genere un
+    # path fuera. Hack: monkeypatchear validate para devolver passthrough.
+    original_validate = plugin_mgmt._validate_plugin_name
+    try:
+        plugin_mgmt._validate_plugin_name = lambda x: x
+        with pytest.raises(PluginMgmtError, match="escapes plugins_dir"):
+            plugin_mgmt._resolve_within(plugins_dir, "../escape")
+    finally:
+        plugin_mgmt._validate_plugin_name = original_validate
+
+
+# ---------------------------------------------------------------------------
+# install_plugin execute=True — git failure modes
+# ---------------------------------------------------------------------------
+
+def test_install_plugin_execute_git_not_in_path(tmp_path, monkeypatch):
+    """Si `git` no está en PATH, FileNotFoundError → mensaje claro."""
+    import subprocess
+    plugins_dir = tmp_path / "plugins"
+
+    def _raise_filenotfound(*args, **kwargs):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'git'")
+
+    monkeypatch.setattr(subprocess, "run", _raise_filenotfound)
+    with pytest.raises(PluginMgmtError, match="git is not available on PATH"):
+        install_plugin(
+            "https://github.com/example/foo-mcp.git",
+            plugins_dir,
+            execute=True,
+        )
+
+
+def test_install_plugin_execute_git_clone_fails(tmp_path, monkeypatch):
+    """Si `git clone` retorna nonzero, propaga stderr en el error."""
+    import subprocess
+    plugins_dir = tmp_path / "plugins"
+
+    def _raise_calledprocesserror(*args, **kwargs):
+        err = subprocess.CalledProcessError(returncode=128, cmd=args[0])
+        err.stderr = "fatal: repository not found"
+        raise err
+
+    monkeypatch.setattr(subprocess, "run", _raise_calledprocesserror)
+    with pytest.raises(PluginMgmtError, match="repository not found"):
+        install_plugin(
+            "https://github.com/nope/nope.git", plugins_dir, execute=True,
+        )
+
+
+def test_install_plugin_execute_git_clone_timeout(tmp_path, monkeypatch):
+    """Si `git clone` excede el timeout, error explícito."""
+    import subprocess
+    plugins_dir = tmp_path / "plugins"
+
+    def _raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=300)
+
+    monkeypatch.setattr(subprocess, "run", _raise_timeout)
+    with pytest.raises(PluginMgmtError, match="timed out"):
+        install_plugin(
+            "https://github.com/slow/slow.git", plugins_dir, execute=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# remove_plugin — file vs directory
+# ---------------------------------------------------------------------------
+
+def test_remove_plugin_target_is_file_not_directory(tmp_path):
+    """Si `plugins_dir/<name>` existe pero es archivo (raro pero posible),
+    rechazar — `rm -rf` sobre un archivo es error de uso."""
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    # Crear un archivo donde debería ir un directorio plugin.
+    (plugins_dir / "weirdo").write_text("not a plugin dir", encoding="utf-8")
+
+    with pytest.raises(PluginMgmtError, match="not a directory"):
+        remove_plugin("weirdo", plugins_dir, execute=False)
+
+
+# ---------------------------------------------------------------------------
+# set_plugin_enabled — manifest missing / malformed
+# ---------------------------------------------------------------------------
+
+def test_set_plugin_enabled_manifest_not_found(tmp_path):
+    """Si el dir existe pero no hay plugin.toml dentro, error explícito."""
+    plugins_dir = tmp_path / "plugins"
+    (plugins_dir / "ghost").mkdir(parents=True)  # dir vacío sin manifest
+    with pytest.raises(PluginMgmtError, match="not found"):
+        set_plugin_enabled("ghost", plugins_dir, enabled=False)
+
+
+def test_set_plugin_enabled_inserts_when_missing_explicit_flag(tmp_path):
+    """Si el manifest no tiene `enabled = …`, se inserta tras `[plugin]`.
+
+    Cubre el path donde el regex `_ENABLED_LINE_RE.subn` retorna 0 matches
+    y hay que caer al header_re del [plugin]."""
+    plugins_dir = tmp_path / "plugins"
+    minimal = plugins_dir / "minimal"
+    minimal.mkdir(parents=True)
+    # Manifest válido en strict mode pero SIN línea `enabled = …`.
+    # Eso fuerza a set_plugin_enabled a caer al path de inserción tras
+    # [plugin] (líneas 313 y siguientes).
+    (minimal / "plugin.toml").write_text(
+        textwrap.dedent("""\
+            [plugin]
+            name = "minimal"
+            version = "0.1.0"
+
+            [runtime]
+            entry = "server.py"
+
+            [security]
+            credential_refs = []
+        """),
+        encoding="utf-8",
+    )
+    (minimal / "server.py").write_text("# placeholder\n", encoding="utf-8")
+
+    result = set_plugin_enabled("minimal", plugins_dir, enabled=False)
+
+    assert result["current"] is False
+    text = (minimal / "plugin.toml").read_text(encoding="utf-8")
+    assert "enabled = false" in text
+    # La línea insertada va justo tras el header [plugin], antes de `name`.
+    assert text.index("enabled = false") < text.index("name =")
+
+
+# ---------------------------------------------------------------------------
+# list_plugins — non-dir entries and dirs without manifest
+# ---------------------------------------------------------------------------
+
+def test_list_plugins_skips_loose_files_in_plugins_dir(tmp_path):
+    """Un archivo suelto en plugins/ (no dir) debe ignorarse silenciosamente."""
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / ".DS_Store").write_text("", encoding="utf-8")
+    _mk_plugin(plugins_dir, "real")
+
+    out = list_plugins(plugins_dir)
+
+    assert len(out) == 1
+    assert out[0]["name"] == "real"
+
+
+def test_list_plugins_skips_dirs_without_manifest(tmp_path):
+    """Un dir sin plugin.toml (e.g. carpeta huérfana) se ignora."""
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / "no-manifest").mkdir()  # dir sin plugin.toml
+    _mk_plugin(plugins_dir, "with-manifest")
+
+    out = list_plugins(plugins_dir)
+
+    names = [p["name"] for p in out]
+    assert names == ["with-manifest"]
