@@ -39,7 +39,6 @@ from typing import Any
 
 from . import MemoryBackend
 
-
 log = logging.getLogger(__name__)
 
 

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from core.loader import parse_manifest, ManifestError
+from core.loader import ManifestError, parse_manifest
 
 # Directory names accept the full GitHub-repo alphabet (hyphens included)
 # to match the way the rest of the ecosystem names its repos. The

@@ -20,6 +20,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import fnmatch as _fnmatch
+import logging
 import os
 import sys
 import time
@@ -28,16 +30,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import logging
-
 from core import audit, plugin_mgmt, secrets
 from core.inventory import Inventory, InventoryError
 from core.loader import LoadReport, reconcile, tool_allowed
 from core.memory import MemoryBackend, load_backend
 from core.profile import load_enabled_plugins
 from core.skills import Skill, discover_agents, discover_skills
-
-import fnmatch as _fnmatch
 
 _log = logging.getLogger(__name__)
 
