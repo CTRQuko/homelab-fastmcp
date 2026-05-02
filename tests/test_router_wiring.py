@@ -1479,3 +1479,124 @@ def test_list_plugins_tool_returns_full_listing(tmp_path):
     bravo = next(p for p in result["plugins"] if p["name"] == "bravo")
     assert alpha["enabled"] is True
     assert bravo["enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# Entry points: main() / run()
+# ---------------------------------------------------------------------------
+
+def test_main_dry_run_returns_zero(tmp_path, monkeypatch, capsys):
+    """``main(["--dry-run"])`` carga config, hace bootstrap, imprime el
+    reporte y sale con 0 sin arrancar el server FastMCP."""
+    # Aislamos a tmp_path: sin router.toml → RouterConfig._defaults().
+    monkeypatch.setattr(router_mod, "DEFAULT_CONFIG", tmp_path / "nope.toml")
+    # Defaults apuntan a ROOT/plugins, ROOT/inventory — pueden no existir.
+    # Forzamos un cfg controlado a través de RouterConfig.load.
+    fake_cfg = router_mod.RouterConfig(
+        profile="default",
+        plugin_dir=tmp_path / "plugins",
+        inventory_dir=tmp_path / "inventory",
+        skills_dir=None,
+        agents_dir=None,
+        memory_backend="noop",
+        memory_config={},
+        strict_manifest=True,
+        audit_enabled=False,  # menos ruido en stderr durante el test
+        allow_plugin_install=False,
+        state_path=tmp_path / "state.json",
+        profile_path=tmp_path / "profiles" / "default.yaml",
+    )
+    (tmp_path / "plugins").mkdir()
+    (tmp_path / "inventory").mkdir()
+    monkeypatch.setattr(
+        router_mod.RouterConfig, "load",
+        classmethod(lambda cls, path=None: fake_cfg),
+    )
+
+    rc = router_mod.main(["--dry-run"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    # `format_report(state)` debe haberse imprimido.
+    assert "MIMIR" in out.upper() or "plugins" in out.lower()
+
+
+def test_main_returns_2_on_routerconfig_load_runtime_error(monkeypatch, capsys):
+    """Si ``RouterConfig.load`` lanza ``RuntimeError`` (toml roto), el
+    proceso emite el error a stderr y devuelve exit code 2."""
+    def _boom(cls, path=None):
+        raise RuntimeError("Could not parse router config at router.toml: bad")
+    monkeypatch.setattr(router_mod.RouterConfig, "load", classmethod(_boom))
+
+    rc = router_mod.main(["--dry-run"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "Could not parse" in err
+
+
+def test_main_returns_2_on_inventory_error(tmp_path, monkeypatch, capsys):
+    """Si ``RouterState.bootstrap`` lanza ``InventoryError`` (inventory
+    inválido), devuelve exit code 2 y reporta a stderr."""
+    from core.inventory import InventoryError
+    fake_cfg = router_mod.RouterConfig(
+        profile="default",
+        plugin_dir=tmp_path / "plugins",
+        inventory_dir=tmp_path / "inventory",
+        skills_dir=None,
+        agents_dir=None,
+        memory_backend="noop",
+        memory_config={},
+        strict_manifest=True,
+        audit_enabled=False,
+        allow_plugin_install=False,
+        state_path=tmp_path / "state.json",
+        profile_path=tmp_path / "p.yaml",
+    )
+    monkeypatch.setattr(
+        router_mod.RouterConfig, "load",
+        classmethod(lambda cls, path=None: fake_cfg),
+    )
+    def _bad_bootstrap(cfg):
+        raise InventoryError("inventory file malformed")
+    monkeypatch.setattr(router_mod.RouterState, "bootstrap", _bad_bootstrap)
+
+    rc = router_mod.main(["--dry-run"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "inventory" in err.lower()
+
+
+def test_main_with_no_argv_reads_sys_argv(tmp_path, monkeypatch):
+    """``main()`` sin ``argv`` debe usar ``sys.argv`` por defecto.
+
+    Cubre la rama del argparse cuando ``argv is None``."""
+    fake_cfg = router_mod.RouterConfig(
+        profile="default",
+        plugin_dir=tmp_path / "plugins",
+        inventory_dir=tmp_path / "inventory",
+        skills_dir=None,
+        agents_dir=None,
+        memory_backend="noop",
+        memory_config={},
+        strict_manifest=True,
+        audit_enabled=False,
+        allow_plugin_install=False,
+        state_path=tmp_path / "state.json",
+        profile_path=tmp_path / "p.yaml",
+    )
+    (tmp_path / "plugins").mkdir()
+    (tmp_path / "inventory").mkdir()
+    monkeypatch.setattr(
+        router_mod.RouterConfig, "load",
+        classmethod(lambda cls, path=None: fake_cfg),
+    )
+    # Simular `python router.py --dry-run` (sin pasar argv explícito).
+    monkeypatch.setattr(sys, "argv", ["router.py", "--dry-run"])
+
+    rc = router_mod.main()
+
+    assert rc == 0
