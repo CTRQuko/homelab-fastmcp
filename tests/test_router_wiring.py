@@ -616,6 +616,9 @@ def test_setup_tool_audits_on_error(tmp_path, monkeypatch):
     assert len(captured) == 1
     assert captured[0]["status"] == "error:RuntimeError"
     assert captured[0]["plugin"] == "needs"
+    # v0.5.0: error_message debe propagarse al audit log para que el
+    # bridge audit-to-runtime-issues pueda generar skeletons útiles.
+    assert captured[0].get("error_message") == "boom"
 
 
 # ---------------------------------------------------------------------------

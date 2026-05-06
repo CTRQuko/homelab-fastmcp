@@ -253,7 +253,14 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
 
     mcp = FastMCP("mimir")
 
-    def _audit(tool: str, args: Any, duration_ms: float, status: str) -> None:
+    def _audit(
+        tool: str,
+        args: Any,
+        duration_ms: float,
+        status: str,
+        *,
+        error_message: str | None = None,
+    ) -> None:
         if state.cfg.audit_enabled:
             audit.log_tool_call(
                 plugin="router",
@@ -261,6 +268,7 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
                 args=args,
                 duration_ms=duration_ms,
                 status=status,
+                error_message=error_message,
             )
 
     def _timed(tool_name: str, fn, args_for_audit):  # type: ignore[no-untyped-def]
@@ -275,6 +283,7 @@ def build_mcp(state: RouterState):  # type: ignore[no-untyped-def]
                 args_for_audit,
                 (time.monotonic() - start) * 1000,
                 f"error:{type(exc).__name__}",
+                error_message=str(exc),
             )
             raise
 
@@ -867,6 +876,7 @@ def _register_setup_tool(mcp, state: "RouterState", plugin_name: str) -> None:  
                     args={},
                     duration_ms=(time.monotonic() - start) * 1000,
                     status=f"error:{type(exc).__name__}",
+                    error_message=str(exc),
                 )
             raise
 
@@ -898,14 +908,15 @@ def _register_skill_tool(mcp, skill: Skill, state: RouterState) -> None:  # type
                     status="ok",
                 )
             return result
-        except Exception:
+        except Exception as exc:
             if state.cfg.audit_enabled:
                 audit.log_tool_call(
                     plugin="skills",
                     tool=tool_name,
                     args={},
                     duration_ms=(time.monotonic() - start) * 1000,
-                    status="error",
+                    status=f"error:{type(exc).__name__}",
+                    error_message=str(exc),
                 )
             raise
 
@@ -939,14 +950,15 @@ def _register_agent_tool(mcp, agent: Skill, state: RouterState) -> None:  # type
                     status="ok",
                 )
             return result
-        except Exception:
+        except Exception as exc:
             if state.cfg.audit_enabled:
                 audit.log_tool_call(
                     plugin="agents",
                     tool=tool_name,
                     args={},
                     duration_ms=(time.monotonic() - start) * 1000,
-                    status="error",
+                    status=f"error:{type(exc).__name__}",
+                    error_message=str(exc),
                 )
             raise
 
