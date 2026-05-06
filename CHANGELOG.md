@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-06 — audit log enrichment + runtime-issues bridge
+
+### Added
+
+- **`core.audit` enrichment** — entries con `status != "ok"` ahora
+  incluyen `error_message` (truncado 500 chars), `client` (identifica
+  el cliente MCP upstream vía env var `MIMIR_CLIENT_ID` → process tree
+  con psutil opcional → "unknown") y `args_sanitized` (copia de los
+  args con keys secret-shaped reemplazadas por `<redacted>` y strings
+  >200 chars truncados). Las entries OK siguen con `args_hash`
+  únicamente — el coste extra solo aplica cuando hay algo que
+  diagnosticar.
+
+  Patrones de redaction (case-insensitive substring): `TOKEN`, `SECRET`,
+  `PASSWORD`, `PASSWD`, `AUTH`, `BEARER`, `CREDENTIAL`, `COOKIE`,
+  `SESSION`, `PRIVATE`, `API_KEY`, `APIKEY`, `ACCESS_KEY`, `SECRET_KEY`,
+  `PRIVATE_KEY`. `KEY` solo está intencionalmente excluido para evitar
+  false positives en `ok_key`/`monkey`/etc.
+
+  `log_tool_call` añade dos kwargs nuevos (`error_message=`, `client=`)
+  ambos opcionales — backwards compatible con callers existentes.
+
+- **`scripts/audit_to_runtime_issues.py`** — bridge stdlib-only que
+  extrae errores del audit log y genera *skeleton entries* en
+  `docs/operator-notes/runtime-issues.md` para que el operador
+  complete causa/fix/prevención. Soporta `--since "<N> hours ago"`,
+  ISO datetime, unix timestamp; `--since-session-start` (psutil
+  opcional) para integrar con hook `Stop` de Claude Code; `--dry-run`
+  para inspección. Append-only con backup `.bak` por seguridad.
+
+  Cross-LLM: cualquier cliente que invoque mimir pasa por audit.log
+  (Claude Code, OpenCode, futuros), así que el script captura los
+  errores de todos sin que el operador escriba a mano cada incidencia.
+
+  El operador añade el hook `Stop` a `~/.claude/settings.json` para
+  ejecutar el script automáticamente al cerrar sesión Claude Code.
+  Para OpenCode (sin hooks nativos) → ejecutar manualmente. Cron job
+  diferido a v0.6.0.
+
+### Tests
+
+- 15 tests nuevos en `test_core_audit.py` (9 → 24): client field,
+  error_message truncation, args_sanitized in errors only, sanitization
+  rules (redaction, truncation, nested structures, primitives, custom
+  objects), `_resolve_client_id` con env var / fallback.
+- 23 tests nuevos en `test_audit_to_runtime.py`: parsing de --since en
+  todas las formas, filtrado por status/timestamp, robustez frente a
+  malformed lines, agrupación por (plugin, tool, error_message[:200]),
+  rendering de skeletons, append + backup, dry-run, integración CLI.
+
+Suite total: **270 → 308 passing**.
+
+### Documentation
+
+- `docs/operator-notes/runtime-issues.md` cabecera reescrita: explica
+  cómo se alimenta el archivo (manual + auto), cómo configurar el hook
+  Stop, cómo usar el script para OpenCode.
+- Entry 2026-05-04 (`homelab_ssh_run timeout hacia todos los nodos`)
+  cerrada documentalmente: el timeout 30s es del plugin homelab
+  v1.4.0 (`proxmox_mcp/server.py:703`), sobreescribible vía argumento
+  `timeout=N`. OpenCode no impone timeout MCP. Que falle a TODOS los
+  nodos sugiere problema sistémico no del timeout.
+
 ## [0.4.0] — 2026-05-02 — engram memory backend
 
 ### Added
