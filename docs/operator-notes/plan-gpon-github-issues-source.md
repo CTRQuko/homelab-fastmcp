@@ -1,7 +1,18 @@
 # Plan — Plugin gpon: GitHub Issues como fuente de consulta on-demand
 
-**Estado**: borrador, no ejecutar hasta OK del operador.
-**Fecha**: 2026-05-06 (revisado tras feedback del operador).
+**Estado**: v3 — cerrado tras feedback. Pendiente OK final del operador para ejecutar.
+**Fecha**: 2026-05-06.
+
+> Cambios v3 vs v2:
+> - `gpon_search_operator_issues` → renombrado a `gpon_search_stick_issues`
+>   (las issues están atadas a configs de stick, no a operadores).
+> - Nueva tool `gpon_get_module_wiki(slug)` (raw markdown).
+> - Nueva tool `gpon_get_module_full(slug)` que **combina**
+>   `gpon_get_model_details + gpon_get_module_wiki + gpon_search_stick_issues`
+>   — esa es la "vista completa para crear entrada de stick".
+> - `gpon_list_known_operators` mantiene; `data/operators.json` snapshot
+>   inicial + estrategia de scraping web diferida a fase 2.
+> - Pre-step: helper compartido `core/secrets.get_github_token()`.
 **Ámbito**: `plugins/gpon/` dentro de `mimir-mcp` (repo upstream
 `CTRQuko/gpon-mcp`).
 
@@ -62,20 +73,27 @@ devuelve el body completo + comentarios.
 | Tool actual | Acción |
 |-------------|--------|
 | `gpon_sync_knowledge_base(force)` | **Eliminar** — ya no hay clon que sincronizar |
-| `gpon_get_module_docs(model_slug)` | **Eliminar** — depende de `_ont/` Jekyll. Si el operador la usa, sustituir por búsqueda en issues |
-| `gpon_list_known_operators()` | **Decidir** — hoy lee `_isp/` Jekyll. Opciones: snapshot a `operators.json` (manual) o eliminar |
+| `gpon_get_module_docs(model_slug)` | **Eliminar** — sustituido por `gpon_get_module_full(slug)` que integra wiki + details + issues |
+| `gpon_list_known_operators()` | **Mantener** — fuente cambia: hoy lee `_isp/` Jekyll → tras el cambio lee `data/operators.json` (ver sección "Operadores" abajo) |
 | `gpon_search_models(query)` | **Mantener** — usa `data/models.json` local |
 | `gpon_get_model_details(slug)` | **Mantener** — usa `data/models.json` + raw fetch puntual |
 | `gpon_list_known_modules()` | **Mantener** — usa `data/models.json` |
 
 ### Tools MCP que se añaden (consulta on-demand)
 
-Solo dos, sin caché ni estado local:
+Sin caché ni estado local:
 
 ```
 gpon_search_issues(query: str, *, state="all", limit=10) -> list[dict]
 gpon_get_issue(number: int, *, with_comments=True) -> dict
+gpon_search_stick_issues(slug: str, *, only_with_fix=False, limit=10) -> list[dict]
+gpon_get_module_wiki(slug: str) -> str
+gpon_get_module_full(slug: str) -> dict   # combina las 3 fuentes
 ```
+
+**Las issues están atadas a configs de stick**, no a operadores. La
+relación con operadores es transitiva (issue del stick X usado con
+operador Y), por eso la búsqueda primaria es por slug de stick.
 
 #### `gpon_search_issues(query, state, limit)`
 
@@ -131,6 +149,116 @@ Devuelve:
   ]
 }
 ```
+
+#### `gpon_search_stick_issues(slug, only_with_fix=False, limit=10)`
+
+Búsqueda especializada por modelo de stick. El slug es el del catálogo
+(`huawei-hg8120c`, `nokia-7368-isam`, etc.). Internamente:
+
+```python
+# slug → terms a buscar (parts del slug + alias del catálogo)
+terms = _slug_to_search_terms(slug, models_json)
+# e.g. "huawei-hg8120c" → ["huawei hg8120c", "HG8120c", "HG8120"]
+query = " OR ".join(terms)
+results = search_issues(query, state="all", limit=limit*2)
+if only_with_fix:
+    results = [r for r in results if _looks_like_fix(r)]
+return results[:limit]
+```
+
+`_looks_like_fix` heurística: issue tiene label `fix`/`solved`, está
+`closed`, o el snippet contiene patrones tipo `fw_setenv`, `Solution:`,
+`Fixed`, `Solved`. No es perfecto pero filtra ruido.
+
+#### `gpon_get_module_wiki(slug)`
+
+Fetch directo del markdown crudo del Jekyll, sin clonar:
+
+```
+GET https://raw.githubusercontent.com/hack-gpon/hack-gpon.github.io/main/_ont/{slug}.md
+```
+
+Devuelve el string del markdown. Si 404, retorna error legible.
+
+#### `gpon_get_module_full(slug)` — vista completa
+
+La pieza clave para "crear entrada de stick con info completa":
+
+```python
+def gpon_get_module_full(slug: str) -> dict:
+    return {
+        "model": gpon_get_model_details(slug),     # estructurado de models.json
+        "wiki": gpon_get_module_wiki(slug),        # markdown crudo del repo
+        "issues": gpon_search_stick_issues(slug, limit=5),  # top 5 issues
+    }
+```
+
+Una sola llamada → toda la info disponible del stick. El LLM lee y crea
+una entrada estructurada. Si una de las 3 fuentes falla (red caída,
+slug desconocido en wiki), las otras dos siguen llegando — el dict
+incluye un campo `errors` con lo que no se pudo obtener.
+
+---
+
+---
+
+## Operadores — fuente de datos (en dos fases)
+
+### Fase 1 (incluida en este cambio): `data/operators.json`
+
+Snapshot manual extraído del `_isp/` Jekyll actual ANTES de borrar el
+clon. Estructura propuesta:
+
+```json
+{
+  "movistar": {
+    "name": "Movistar (Telefónica España)",
+    "country": "ES",
+    "vlan": 6,
+    "loid_format": "<formato esperado del Logical ONU ID>",
+    "ploam_password": "...",
+    "tags": ["dual-stack", "PPPoE"],
+    "notes": "GPON SN must end in...",
+    "tested_sticks": ["huawei-hg8120c", "nokia-7368-isam"]
+  },
+  "vodafone-es": { ... },
+  "orange-es": { ... },
+  "yoigo": { ... },
+  "digi-es": { ... },
+  "pepephone": { ... }
+}
+```
+
+Mantenido a mano. Cuando el operador detecte cambio (cambio de VLAN
+upstream, nueva ISP), edita el JSON y commitea. Es el patrón que ya
+funciona con `data/models.json`.
+
+`gpon_list_known_operators()` lee este JSON.
+Nuevo: `gpon_get_operator_details(slug)` devuelve un operador concreto.
+
+### Fase 2 (DIFERIDA — separada del PR de issues)
+
+Tool nueva `gpon_search_operator_web(operator_name)` que scrapea fuentes
+web públicas para info actualizada de configs. Diseño preliminar (no
+incluido en este plan, requiere su propio análisis):
+
+| Fuente | Cobertura | Robustez del scraper |
+|--------|-----------|----------------------|
+| `bandaancha.eu/foros` | España fuerte | Alta — foros estables, structure conocida |
+| `adslzone.net/foros` | España alta | Media — cambia más |
+| Reddit `/r/homelab` (search por flair) | Mundial | Baja — JSON API API key, formato variable |
+| OpenWrt forum (search) | Mundial técnico | Media |
+
+**Por qué se difiere**: scraping de webs públicas requiere diseño
+cuidadoso (rate limit, user-agent honesto, robots.txt, mantenimiento
+cuando el HTML cambia). Mejor probar la mecánica de issues primero,
+después abordar este lado con su propio plan dedicado.
+
+**Cuando se aborde Fase 2**: la tool va contra fuentes ES primero
+(bandaancha + adslzone — son las que el operador conoce). Para ampliar
+scope a otros países, cada nuevo país añade su fuente equivalente
+(Portugal: pplware, dudasti; Italia: hwupgrade; etc.) — siempre como
+adapters separados detrás de la misma interfaz, no scraping monolítico.
 
 ---
 
@@ -290,60 +418,89 @@ vuelva si alguien hace pull de upstream.
 ## Migration steps (ejecución cuando OK del operador)
 
 ```
-Step 1: Inventario read-only — pytest plugins/gpon/ -v y registrar
-        qué tests dependen del Jekyll clonado. (~10 min)
+Pre-step: Helper get_github_token() en core/secrets.py + tests.
+          Convención env: MIMIR_GITHUB_TOKEN > GITHUB_TOKEN > None.
+          Útil para gpon ahora y futuros plugins. (~15 min)
 
-Step 2: Crear plugins/gpon/gpon_mcp/issues.py + tests test_issues.py
-        con mocks. Solo el módulo nuevo, no toca el resto. (~45 min)
+Step 1:   Inventario read-only — pytest plugins/gpon/ -v.
+          Listar tests/tools que dependen del Jekyll clonado. (~10 min)
 
-Step 3: Wire 2 tools MCP en server.py (gpon_search_issues,
-        gpon_get_issue). Eliminar gpon_sync_knowledge_base y
-        gpon_get_module_docs. Resolver gpon_list_known_operators
-        según Q1. (~30 min)
+Step 2:   Snapshot one-shot _isp/ → data/operators.json.
+          Script ad-hoc parseando los .md del Jekyll actual antes de
+          borrarlo. Mantener estructura JSON propuesta arriba. (~30 min)
 
-Step 4: Eliminar carpeta knowledge/hack-gpon/, knowledge_sync.py,
-        simplificar/eliminar knowledge_sync_v3.py. Adaptar tests
-        existentes que se rompan. (~30 min)
+Step 3:   Crear plugins/gpon/gpon_mcp/issues.py + tests con mocks.
+          Funciones: search_issues, get_issue, search_stick_issues,
+          get_module_wiki. Usa core.secrets.get_github_token(). (~60 min)
 
-Step 5: Bump version + plugin.toml + CHANGELOG. (~10 min)
+Step 4:   Wire en server.py de las 5 tools nuevas:
+          - gpon_search_issues
+          - gpon_get_issue
+          - gpon_search_stick_issues
+          - gpon_get_module_wiki
+          - gpon_get_module_full (combina las 3 fuentes)
+          Eliminar gpon_sync_knowledge_base + gpon_get_module_docs.
+          Adaptar gpon_list_known_operators para leer operators.json. (~45 min)
 
-Step 6: Suite verde + smoke test end-to-end:
-        - gpon_search_issues("vlan huawei") → resultados
-        - gpon_get_issue(328) → body + comments del issue (~10 min)
+Step 5:   Eliminar carpeta knowledge/hack-gpon/, knowledge_sync.py,
+          simplificar knowledge_sync_v3.py. Adaptar tests rotos. (~30 min)
 
-Step 7: Commit en mimir-mcp local + push (autorizado).
-        Para repo upstream CTRQuko/gpon-mcp: requiere OK explícito
-        (Q5).
+Step 6:   Bump version 2.1.0 → 2.2.0. plugin.toml: añadir credential
+          opcional GPON_GITHUB_TOKEN. CHANGELOG entry. (~15 min)
+
+Step 7:   Suite verde + smoke test end-to-end real:
+          - gpon_search_issues("vlan huawei") → resultados
+          - gpon_get_issue(328) → body + comments del issue
+          - gpon_search_stick_issues("huawei-hg8120c") → matches
+          - gpon_get_module_full("huawei-hg8120c") → 3 fuentes
+          - gpon_list_known_operators() → JSON con N entries (~15 min)
+
+Step 8:   Commit local en mimir-mcp + push (autorizado).
+          PARAR aquí. Pedir OK explícito antes de tocar
+          CTRQuko/gpon-mcp upstream.
 ```
 
-Total estimado: ~2h efectivas.
+Total estimado: ~3.5h efectivas (gated por tu OK en cada commit).
+
+## Fuera de scope explícitamente diferido
+
+- **Fase 2 operadores web scraping** (bandaancha/adslzone) — plan
+  separado tras validar la mecánica de issues.
+- **Repo upstream `CTRQuko/gpon-mcp` push** — Step 9 implícito,
+  requiere OK explícito tuyo después de validar local.
 
 ---
 
-## Open questions (decisiones del operador)
+## Decisiones cerradas (operador confirmó)
 
-1. **`gpon_list_known_operators` (`_isp/`)**: ¿se elimina, o se hace un
-   snapshot manual a `data/operators.json` para mantenerla? Si la usas
-   raramente o nunca, recomiendo eliminarla.
+1. **`gpon_list_known_operators`**: ✅ MANTENER. Fuente: snapshot inicial
+   `data/operators.json` (Fase 1) extraído del Jekyll antes de borrarlo.
+   Ampliación a scraping web (bandaancha/adslzone) → Fase 2 diferida con
+   plan dedicado.
 
-2. **Token GitHub**: ¿activamos el credential opcional `GPON_GITHUB_TOKEN`?
-   Sin token: 10 búsquedas/min (suficiente para uso humano, fallaría en
-   loops). Con token (puedes usar el de `secrets/github-token.md`):
-   30/min y mejor cuota agregada. Recomiendo: **soportar pero no exigir**
-   — sin token funciona, con token va mejor.
+2. **Token GitHub**: ✅ Helper centralizado en `core/secrets.get_github_token()`
+   (mimir-wide), no por plugin. Convención env:
+   `MIMIR_GITHUB_TOKEN` > `GITHUB_TOKEN` > None. Plugins lo importan.
+   Sin token funciona (10 search/min), con token va mejor (30/min).
 
-3. **`gpon_get_module_docs`**: ¿la usabas? Si sí, sustituyo por
-   `gpon_search_issues + gpon_get_issue` o por añadir más detalle a
-   `gpon_get_model_details`?
+3. **`gpon_get_module_docs`**: ✅ ELIMINAR + sustituir por
+   `gpon_get_module_full(slug)` que combina `model_details + wiki + issues`.
+   Esta tool es la pensada para "crear entrada de stick con info completa".
 
-4. **Repo upstream `CTRQuko/gpon-mcp`**: ¿quieres que el cambio se
-   haga directamente en el upstream (push commits a tu fork) o trabajar
-   primero en el local de mimir-mcp y luego replicar? **Tocar repo
-   externo siempre requiere OK explícito** según core-security.md.
+4. **Repo upstream `CTRQuko/gpon-mcp`**: ✅ LOCAL PRIMERO. Trabajar en
+   `plugins/gpon/` de mimir-mcp, validar end-to-end. Push a upstream
+   solo tras OK explícito post-validación.
 
-5. **Bonus**: ¿quieres también una tool `gpon_search_pulls` para PRs
-   merged como fixes oficiales? (los issues incluyen PRs en GitHub
-   Search, pero filtrar `is:pr is:merged` puede ser útil)
+5. **`gpon_search_pulls`**: ✅ DESCARTADA. El repo `hack-gpon.github.io`
+   es sitio Jekyll de docs, no código. PRs son cambios de doc, no fixes
+   de firmware. Valor real está en issues → suficiente.
+
+## Extensiones añadidas tras feedback
+
+- **`gpon_search_stick_issues(slug)`**: las issues están atadas a configs
+  de stick específico, no a operadores. Búsqueda primaria por slug.
+- **`gpon_get_module_wiki(slug)`**: raw markdown del Jekyll vía raw fetch.
+- **`gpon_get_module_full(slug)`**: integra los 3 a una sola llamada.
 
 ---
 
