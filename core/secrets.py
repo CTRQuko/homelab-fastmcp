@@ -264,6 +264,39 @@ def mask(value: str, visible: int = 4) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Cross-plugin credential helpers
+# ---------------------------------------------------------------------------
+# Convención central para tokens compartidos entre plugins. Cuando un
+# plugin necesita un token GitHub (consultas a la API REST), no debe
+# reinventar el lookup: usa este helper para mantener una sola fuente
+# de verdad y un solo nombre de env var documentado.
+
+def get_github_token() -> str | None:
+    """Resolve a GitHub Personal Access Token shared across plugins.
+
+    Lookup priority (first non-empty wins):
+
+    1. ``MIMIR_GITHUB_TOKEN`` — mimir-specific, recommended when the
+       operator quiere distinguir el token usado por mimir frente al
+       de su shell/gh CLI personal.
+    2. ``GITHUB_TOKEN`` — el estándar que ya usan ``gh`` CLI, GitHub
+       Actions y la mayoría de herramientas. Si el operador ya lo
+       tiene seteado para uso general, lo respetamos.
+
+    Returns ``None`` if neither variable is set or both are empty.
+    Callers decide cómo degradar (fetch sin auth con rate limit más
+    bajo, o error explícito según el caso de uso).
+
+    Never raises.
+    """
+    for var in ("MIMIR_GITHUB_TOKEN", "GITHUB_TOKEN"):
+        v = os.environ.get(var, "").strip()
+        if v:
+            return v
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Enumeration helpers (for subprocess plugin env scoping)
 # ---------------------------------------------------------------------------
 # A "credential-looking" key is an uppercase alnum+underscore identifier of

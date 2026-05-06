@@ -247,3 +247,43 @@ def test_md_files_identical_duplicates_do_not_warn(monkeypatch, tmp_path):
 
     assert result == "identical"
     assert not any(issubclass(w.category, UserWarning) for w in caught)
+
+
+# ---------------------------------------------------------------------------
+# get_github_token — cross-plugin shared lookup
+# ---------------------------------------------------------------------------
+
+def test_get_github_token_prefers_mimir_specific(monkeypatch):
+    """``MIMIR_GITHUB_TOKEN`` toma precedencia sobre ``GITHUB_TOKEN``."""
+    monkeypatch.setenv("MIMIR_GITHUB_TOKEN", "ghp_mimir_specific")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_general")
+    assert secrets.get_github_token() == "ghp_mimir_specific"
+
+
+def test_get_github_token_falls_back_to_standard(monkeypatch):
+    """Sin ``MIMIR_GITHUB_TOKEN``, usa el estándar ``GITHUB_TOKEN``
+    (compatible con gh CLI / GitHub Actions / etc.)."""
+    monkeypatch.delenv("MIMIR_GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_general")
+    assert secrets.get_github_token() == "ghp_general"
+
+
+def test_get_github_token_returns_none_when_unset(monkeypatch):
+    """Sin ninguna de las dos env vars, retorna None — caller decide."""
+    monkeypatch.delenv("MIMIR_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert secrets.get_github_token() is None
+
+
+def test_get_github_token_strips_whitespace(monkeypatch):
+    """Whitespace-only env vars cuentan como vacías."""
+    monkeypatch.setenv("MIMIR_GITHUB_TOKEN", "   ")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_real_token")
+    assert secrets.get_github_token() == "ghp_real_token"
+
+
+def test_get_github_token_empty_strings_skipped(monkeypatch):
+    """String vacío en una y valor en otra → usa el que tiene valor."""
+    monkeypatch.setenv("MIMIR_GITHUB_TOKEN", "")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
+    assert secrets.get_github_token() == "ghp_x"
