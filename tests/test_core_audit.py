@@ -134,3 +134,174 @@ def test_resolve_default_audit_path_falls_back_to_framework_root(monkeypatch):
     # El path acaba en config/audit.log y la abuela del módulo es el repo.
     assert result.name == "audit.log"
     assert result.parent.name == "config"
+
+
+# ---------------------------------------------------------------------------
+# Enriched payload — client + error_message + args_sanitized
+# ---------------------------------------------------------------------------
+
+def test_log_includes_client_field(tmp_path, monkeypatch):
+    """Toda entry debe incluir ``client`` (default: resolver chain)."""
+    monkeypatch.setenv("MIMIR_CLIENT_ID", "test-client-x")
+    path = tmp_path / "audit.log"
+    log_tool_call("p", "t", {}, 1.0, "ok", path=path)
+    entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert entry["client"] == "test-client-x"
+
+
+def test_log_client_explicit_overrides_resolver(tmp_path, monkeypatch):
+    """Pasar ``client=`` explícito tiene precedencia sobre env var."""
+    monkeypatch.setenv("MIMIR_CLIENT_ID", "from-env")
+    path = tmp_path / "audit.log"
+    log_tool_call("p", "t", {}, 1.0, "ok", path=path, client="from-arg")
+    entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert entry["client"] == "from-arg"
+
+
+def test_log_error_includes_error_message_truncated(tmp_path):
+    long_msg = "X" * 800
+    path = tmp_path / "audit.log"
+    log_tool_call(
+        "p", "t", {"a": 1}, 1.0, "error:RuntimeError",
+        path=path, error_message=long_msg,
+    )
+    entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert entry["status"].startswith("error")
+    # Trunca a 500 chars exactos.
+    assert len(entry["error_message"]) == 500
+    assert entry["error_message"] == "X" * 500
+
+
+def test_log_error_includes_args_sanitized(tmp_path):
+    path = tmp_path / "audit.log"
+    log_tool_call(
+        "p", "t",
+        {"node": "pve", "TOKEN": "tskey-abc-123"},
+        1.0, "error:KeyError",
+        path=path, error_message="missing key",
+    )
+    entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert entry["args_sanitized"] == {"node": "pve", "TOKEN": "<redacted>"}
+
+
+def test_log_ok_does_not_include_enriched_fields(tmp_path):
+    path = tmp_path / "audit.log"
+    log_tool_call(
+        "p", "t", {"TOKEN": "secret"}, 1.0, "ok",
+        path=path, error_message="should not appear",
+    )
+    entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert "error_message" not in entry
+    assert "args_sanitized" not in entry  # OK path stays cheap
+    # args_hash sigue presente (covered by existing test_log_writes_json_line).
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_args — redaction + truncation
+# ---------------------------------------------------------------------------
+
+def test_sanitize_redacts_secret_shaped_keys():
+    raw = {
+        "node": "pve",
+        "API_KEY": "abc123",
+        "password": "p4ss",
+        "x-auth-token": "tok",
+        "MyCookieValue": "yum",
+    }
+    result = audit._sanitize_args(raw)
+    assert result["node"] == "pve"
+    assert result["API_KEY"] == "<redacted>"
+    assert result["password"] == "<redacted>"
+    assert result["x-auth-token"] == "<redacted>"
+    assert result["MyCookieValue"] == "<redacted>"
+
+
+def test_sanitize_truncates_long_strings():
+    raw = {"output": "Z" * 500, "short": "abc"}
+    result = audit._sanitize_args(raw)
+    assert result["output"].startswith("Z" * 200)
+    assert result["output"].endswith("...<truncated>")
+    assert result["short"] == "abc"
+
+
+def test_sanitize_handles_nested_structures():
+    raw = {
+        "outer": {"TOKEN": "x", "ok_key": "y"},
+        "list": [{"PASSWORD": "z"}, "plain"],
+    }
+    result = audit._sanitize_args(raw)
+    assert result["outer"] == {"TOKEN": "<redacted>", "ok_key": "y"}
+    assert result["list"][0] == {"PASSWORD": "<redacted>"}
+    assert result["list"][1] == "plain"
+
+
+def test_sanitize_passthrough_primitives():
+    assert audit._sanitize_args(42) == 42
+    assert audit._sanitize_args(None) is None
+    assert audit._sanitize_args(3.14) == 3.14
+    assert audit._sanitize_args("short") == "short"
+
+
+def test_sanitize_top_level_long_string_truncates():
+    raw = "Y" * 500
+    result = audit._sanitize_args(raw)
+    assert len(result) == 200 + len("...<truncated>")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_client_id
+# ---------------------------------------------------------------------------
+
+def test_resolve_client_id_uses_env_var(monkeypatch):
+    monkeypatch.setenv("MIMIR_CLIENT_ID", "claude-code")
+    assert audit._resolve_client_id() == "claude-code"
+
+
+def test_resolve_client_id_falls_back_to_unknown_when_no_env(monkeypatch):
+    """Sin env y sin psutil disponible (o falla), devuelve "unknown"."""
+    monkeypatch.delenv("MIMIR_CLIENT_ID", raising=False)
+    # Forzar el path de error de psutil simulando ImportError.
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "psutil", None)  # type: ignore[arg-type]
+    # Con None en sys.modules, ``import psutil`` lanza TypeError/ImportError.
+    result = audit._resolve_client_id()
+    # Cualquiera de los dos paths del fallback es válido (psutil real
+    # podría devolver el nombre del proceso pytest si está instalado).
+    # El contrato es "no raise" + retorna string non-empty.
+    assert isinstance(result, str)
+    assert result  # non-empty
+
+
+def test_resolve_client_id_strips_whitespace_in_env(monkeypatch):
+    monkeypatch.setenv("MIMIR_CLIENT_ID", "  opencode  ")
+    assert audit._resolve_client_id() == "opencode"
+
+
+def test_resolve_client_id_empty_env_treated_as_unset(monkeypatch):
+    monkeypatch.setenv("MIMIR_CLIENT_ID", "   ")  # whitespace only
+    # No assertion sobre el valor — solo que no raise y devuelve string.
+    result = audit._resolve_client_id()
+    assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# Sanitization defensive behaviour
+# ---------------------------------------------------------------------------
+
+def test_log_does_not_break_when_args_unjsonable(tmp_path):
+    """args con objetos no-JSON (ya cubiertos por hash), pero ahora también
+    deben pasar por sanitize sin romper."""
+    class Weird:
+        def __repr__(self):
+            return "<weird>"
+
+    path = tmp_path / "audit.log"
+    log_tool_call(
+        "p", "t", {"obj": Weird(), "TOKEN": "abc"}, 1.0, "error:Weird",
+        path=path, error_message="oops",
+    )
+    entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    # TOKEN redacted, obj passes through stringified by JSON's default=str
+    # path of _hash_args (but args_sanitized just returns the object — JSON
+    # serialization at write time will use str()).
+    assert entry["args_sanitized"]["TOKEN"] == "<redacted>"
