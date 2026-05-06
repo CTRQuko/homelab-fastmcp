@@ -324,11 +324,56 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Tag included in the skeleton entries (default: auto from time).",
     )
     p.add_argument(
+        "--state-file",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a state file storing the last-processed audit ts. "
+            "When set: overrides --since with the stored ts (initial run "
+            "falls back to --since), and after a successful append updates "
+            "it to the max ts seen. Use this for cron jobs to avoid "
+            "duplicate skeleton entries between runs."
+        ),
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the would-be appended content; do not modify files.",
     )
     return p
+
+
+# ---------------------------------------------------------------------------
+# State file (for cron / repeated invocations)
+# ---------------------------------------------------------------------------
+
+def read_state_ts(state_file: Path | None) -> float | None:
+    """Read last-processed ts from state file. Returns None if absent or
+    malformed — caller should fall back to --since.
+    """
+    if state_file is None or not state_file.exists():
+        return None
+    try:
+        text = state_file.read_text(encoding="utf-8").strip()
+        return float(text)
+    except (OSError, ValueError):
+        return None
+
+
+def write_state_ts(state_file: Path | None, ts: float) -> None:
+    """Persist last-processed ts. Creates parent dir if needed.
+
+    Never raises — failure is silent (the next run just re-processes a
+    few entries, which the .md already shows are duplicates the operator
+    can clean up).
+    """
+    if state_file is None:
+        return
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(f"{ts}\n", encoding="utf-8")
+    except OSError:
+        return
 
 
 def _resolve_session_start_ts() -> float | None:
@@ -348,7 +393,12 @@ def main(argv: list[str] | None = None) -> int:
     audit_log = args.audit_log or _default_audit_log()
     md_path = args.append_to or _default_runtime_issues_md()
 
-    if args.since_session_start:
+    # Cutoff resolution priority: --state-file (if exists) > --since-session-start > --since.
+    # The state file path takes precedence so cron loops don't re-process entries.
+    state_ts = read_state_ts(args.state_file)
+    if state_ts is not None:
+        since_dt = datetime.fromtimestamp(state_ts, tz=timezone.utc)
+    elif args.since_session_start:
         ts_start = _resolve_session_start_ts()
         if ts_start is None:
             since_dt = parse_since("2 hours ago")
@@ -370,6 +420,10 @@ def main(argv: list[str] | None = None) -> int:
             f"in {audit_log}. Nothing to append.",
             file=sys.stderr,
         )
+        # Even when nothing changed, advance the state cursor to "now" so
+        # the next cron tick doesn't re-scan the same window unnecessarily.
+        if args.state_file is not None and not args.dry_run:
+            write_state_ts(args.state_file, datetime.now(timezone.utc).timestamp())
         return 0
 
     if args.dry_run:
@@ -382,6 +436,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     append_to_md(md_path, block)
+
+    # Update state to the max ts seen so subsequent cron runs skip these.
+    if args.state_file is not None:
+        max_ts = max(
+            (e.get("ts", 0.0) for e in entries if isinstance(e.get("ts"), (int, float))),
+            default=since_ts,
+        )
+        write_state_ts(args.state_file, float(max_ts))
+
     print(
         f"[audit-to-runtime] Appended {len(groups)} group(s) "
         f"({len(entries)} entries) to {md_path}",

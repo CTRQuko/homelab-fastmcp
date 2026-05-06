@@ -322,3 +322,130 @@ def test_main_no_errors_returns_0_and_no_changes(tmp_path, script):
     # md unchanged, no backup.
     assert md.read_text(encoding="utf-8") == "original\n"
     assert not (tmp_path / "runtime-issues.md.bak").exists()
+
+
+# ---------------------------------------------------------------------------
+# State file (cron-friendly idempotent behaviour)
+# ---------------------------------------------------------------------------
+
+def test_read_state_ts_returns_none_when_missing(tmp_path, script):
+    assert script.read_state_ts(tmp_path / "no.state") is None
+
+
+def test_read_state_ts_returns_none_when_malformed(tmp_path, script):
+    f = tmp_path / "state"
+    f.write_text("garbage", encoding="utf-8")
+    assert script.read_state_ts(f) is None
+
+
+def test_write_state_ts_persists_value(tmp_path, script):
+    f = tmp_path / "subdir" / "state"  # parent doesn't exist yet
+    script.write_state_ts(f, 1715000000.5)
+    assert script.read_state_ts(f) == 1715000000.5
+
+
+def test_main_with_state_file_initial_run_uses_since(tmp_path, script):
+    """Primera ejecución con --state-file: como no existe, cae a --since
+    y al final escribe el max ts visto."""
+    log = tmp_path / "audit.log"
+    md = tmp_path / "runtime-issues.md"
+    state = tmp_path / "audit.state"
+    now = datetime.now(timezone.utc).timestamp()
+    _write_audit_log(log, [
+        {"ts": now - 600, "plugin": "p", "tool": "t", "status": "error:X",
+         "error_message": "msg1", "args_hash": "h1"},
+        {"ts": now - 300, "plugin": "p", "tool": "t", "status": "error:X",
+         "error_message": "msg1", "args_hash": "h2"},
+    ])
+    rc = script.main([
+        "--audit-log", str(log),
+        "--append-to", str(md),
+        "--since", "1 hour ago",
+        "--state-file", str(state),
+        "--session-tag", "first-run",
+    ])
+    assert rc == 0
+    # State file persiste el max ts (= now-300, último de los 2 errores).
+    persisted = script.read_state_ts(state)
+    assert persisted == now - 300
+    # md tiene el bloque con first-run.
+    assert "first-run" in md.read_text(encoding="utf-8")
+
+
+def test_main_with_state_file_skips_already_processed_entries(tmp_path, script):
+    """Segunda ejecución con --state-file: ignora entries con ts <= state_ts,
+    solo procesa las nuevas. Esto es lo que evita duplicados en cron."""
+    log = tmp_path / "audit.log"
+    md = tmp_path / "runtime-issues.md"
+    state = tmp_path / "audit.state"
+    now = datetime.now(timezone.utc).timestamp()
+
+    # Pre-poblamos state como si una corrida anterior ya hubiera procesado
+    # hasta ts = now - 500.
+    state.write_text(f"{now - 500}", encoding="utf-8")
+
+    _write_audit_log(log, [
+        {"ts": now - 600, "plugin": "p", "tool": "t", "status": "error:OLD",
+         "error_message": "old", "args_hash": "h_old"},  # antes del state, skip
+        {"ts": now - 200, "plugin": "p", "tool": "t", "status": "error:NEW",
+         "error_message": "new", "args_hash": "h_new"},  # después, procesar
+    ])
+    rc = script.main([
+        "--audit-log", str(log),
+        "--append-to", str(md),
+        "--since", "1 hour ago",  # would catch both, but state-file overrides
+        "--state-file", str(state),
+        "--session-tag", "second-run",
+    ])
+    assert rc == 0
+    out = md.read_text(encoding="utf-8")
+    assert "new" in out  # nueva entry procesada
+    assert "old" not in out  # vieja se filtró por state-file
+    # State avanzó al ts más reciente.
+    assert script.read_state_ts(state) == now - 200
+
+
+def test_main_with_state_file_no_errors_advances_state_to_now(tmp_path, script):
+    """Si no hay errores nuevos pero hay state-file, igual avanza el cursor
+    a 'now' para que el siguiente run no re-scanee el mismo intervalo."""
+    log = tmp_path / "audit.log"
+    md = tmp_path / "runtime-issues.md"
+    state = tmp_path / "audit.state"
+    state.write_text("100.0", encoding="utf-8")
+
+    _write_audit_log(log, [
+        {"ts": 200, "plugin": "p", "tool": "t", "status": "ok", "args_hash": "h"},
+    ])
+    rc = script.main([
+        "--audit-log", str(log),
+        "--append-to", str(md),
+        "--state-file", str(state),
+    ])
+    assert rc == 0
+    # State avanzó a now (>> 100.0 por mucho).
+    assert script.read_state_ts(state) > 1_000_000_000  # algo razonablemente reciente
+
+
+def test_main_dry_run_with_state_file_does_not_update_state(tmp_path, script):
+    """--dry-run NO debe modificar el state file."""
+    log = tmp_path / "audit.log"
+    md = tmp_path / "runtime-issues.md"
+    state = tmp_path / "audit.state"
+    state.write_text("100.0", encoding="utf-8")
+    now = datetime.now(timezone.utc).timestamp()
+
+    _write_audit_log(log, [
+        {"ts": now, "plugin": "p", "tool": "t", "status": "error:X",
+         "error_message": "x", "args_hash": "h"},
+    ])
+    rc = script.main([
+        "--audit-log", str(log),
+        "--append-to", str(md),
+        "--state-file", str(state),
+        "--dry-run",
+    ])
+    assert rc == 0
+    # State NO debe haber cambiado.
+    assert script.read_state_ts(state) == 100.0
+    # md tampoco modificado.
+    assert not md.exists()
