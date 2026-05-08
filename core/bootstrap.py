@@ -24,7 +24,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from core.inventory import Inventory, append_host, append_service
+from core.inventory import (
+    _VALID_HOST_TYPES,
+    Inventory,
+    append_host,
+    append_service,
+)
 from core.loader import LoadReport
 
 _VAULT_FILENAME = "router_vault.md"
@@ -131,6 +136,22 @@ def router_add_host(
     auth_method: str | None = None,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
+    # Validate the type BEFORE persisting. Otherwise an invalid type lands
+    # in hosts.yaml and the next router boot crashes (loader rejects the
+    # whole inventory because the loaded host fails type check). Concrete
+    # repro: 2026-05-06 added a host with type='ubiquiti-switch' and the
+    # next mimir restart failed to load until manual yaml fix.
+    if type not in _VALID_HOST_TYPES:
+        return {
+            "ok": False,
+            "error": (
+                f"type '{type}' not in valid host types: "
+                f"{sorted(_VALID_HOST_TYPES)}. Pick one of these or extend "
+                "core/inventory.py:_VALID_HOST_TYPES if a new category is "
+                "genuinely needed (and add a tag like 'ubiquiti', 'router', "
+                "'switch' to disambiguate within 'network-device')."
+            ),
+        }
     host: dict[str, Any] = {"name": name, "type": type, "address": address}
     if port is not None:
         host["port"] = int(port)

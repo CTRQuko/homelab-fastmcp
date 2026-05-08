@@ -74,6 +74,37 @@ def test_add_host_then_add_service(tmp_path):
     assert [s.name for s in inv.get_services()] == ["web"]
 
 
+def test_add_host_rejects_invalid_type_before_persisting(tmp_path):
+    """Regresion: 2026-05-06 un host con type='ubiquiti-switch' fue persistido
+    a hosts.yaml y reventó el siguiente boot del router. La validacion debe
+    correr ANTES del append, devolviendo error legible sin tocar disco.
+    """
+    res = router_add_host(
+        tmp_path,
+        name="ubi-switch",
+        type="ubiquiti-switch",  # NO está en _VALID_HOST_TYPES
+        address="10.0.1.99",
+    )
+    assert res["ok"] is False
+    assert "ubiquiti-switch" in res["error"]
+    assert "network-device" in res["error"]  # sugiere alternativa válida
+    # hosts.yaml NO debe haberse creado (refusa antes de tocar disco)
+    assert not (tmp_path / "hosts.yaml").exists()
+
+
+def test_add_host_accepts_all_valid_types(tmp_path):
+    """Cada type del whitelist debe pasar sin error."""
+    from core.inventory import _VALID_HOST_TYPES
+    for i, htype in enumerate(_VALID_HOST_TYPES):
+        res = router_add_host(
+            tmp_path,
+            name=f"host-{i}",
+            type=htype,
+            address=f"192.0.2.{i + 1}",
+        )
+        assert res["ok"], f"type='{htype}' should be valid: {res}"
+
+
 def test_add_credential_rejected_when_no_plugin_pattern(tmp_path):
     report = LoadReport(plugins=[])
     res = router_add_credential("FOO_TOKEN", "x", report, vault_dir=tmp_path)
