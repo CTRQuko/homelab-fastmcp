@@ -7,3 +7,4 @@ enabled_plugins:
   - homelab
   - gpon
   - uart
+  - nginx-ui-ops
