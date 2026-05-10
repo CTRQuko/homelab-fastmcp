@@ -8,3 +8,4 @@ enabled_plugins:
   - gpon
   - uart
   - nginx-ui-ops
+  - unifi

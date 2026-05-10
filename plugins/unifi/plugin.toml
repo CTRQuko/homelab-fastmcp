@@ -1,7 +1,14 @@
-# Fase 7 cutover manifest — UniFi controller API (upstream uvx package).
-# MATERIALIZADO: este manifest está desplegado como `plugins/unifi/plugin.toml`.
-# Mantener este archivo SINCRONIZADO con el plugins/unifi/plugin.toml real
-# (test_cutover_manifests.py lo cubre).
+# UniFi Controller plugin — wrapper sobre `uvx unifi-mcp-server`
+# (paquete upstream de https://github.com/enuno/unifi-mcp-server, PyPI:
+# https://pypi.org/project/unifi-mcp-server/).
+#
+# Origen: Fase 7 cutover plan en docs/operator-notes/cutover/manifests/unifi/
+# Materialized: 2026-05-08.
+#
+# El paquete expone 74 tools sobre el UniFi Network Controller (devices,
+# clients, network config, firewall, QoS, WiFi, backup, port-forwarding,
+# DPI analytics, topology, RADIUS). Auth via API_KEY (header `x-api-key`,
+# NO Bearer).
 
 [plugin]
 name = "unifi"
@@ -9,7 +16,8 @@ version = "1.0.0"
 enabled = true
 
 [runtime]
-# unifi-mcp-server ya se publica como paquete uvx — no necesita checkout.
+# uvx ejecuta el paquete en un venv efímero — no requiere checkout local.
+# Cada spawn baja la última versión cacheada de PyPI.
 command = "uvx"
 args = ["unifi-mcp-server"]
 

@@ -70,6 +70,10 @@ config/audit.log*
 config/memory.db
 plugins/*/
 !plugins/_example/
+# unifi es un plugin "wrapper-only" sin codigo propio — solo plugin.toml
+# que delega a `uvx unifi-mcp-server` (paquete upstream). NO tiene repo
+# separado porque seria overkill para ~30 lineas de TOML.
+!plugins/unifi/
 
 # Per-session Claude Code preferences — never commit
 .claude/settings.local.json
