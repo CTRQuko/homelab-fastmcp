@@ -30,6 +30,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# Reconfigure stdout/stderr to UTF-8 on Windows. The Windows console default
+# codepage (typically cp1252) chokes on common Unicode characters (em dash,
+# right arrow, etc.) that appear in plugin manifest prompts and in our own
+# format_report output. UnicodeEncodeError at print-time would abort the
+# router before any plugin can mount. ``errors="replace"`` makes it
+# fail-soft (replace unmappable chars with '?') instead of crashing.
+# No-op on POSIX where stdout is already UTF-8.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        # Python < 3.7 or stdout replaced with a non-TextIOWrapper.
+        # Fall through silently — Unicode prints may still crash, but
+        # there's no portable fix.
+        pass
+
 from core import audit, plugin_mgmt, secrets
 from core.inventory import Inventory, InventoryError
 from core.loader import LoadReport, reconcile, tool_allowed
