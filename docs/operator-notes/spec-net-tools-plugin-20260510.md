@@ -1,9 +1,17 @@
-# Spec funcional — plugin `net-tools` (Cloudflare + Pi-hole + AdGuard)
+# Spec funcional — plugin `net-tools` (Cloudflare + AdGuard)
 
-> Especificación de las 3 áreas P0 del documento `tool-gaps-reverse-proxy-plan-20260510.md`.
-> Plugin agregado en `mimir-mcp/plugins/net-tools/` con 3 sub-módulos (`cloudflare/`,
-> `pihole/`, `adguard/`) compartiendo runtime + manifest. Nivel: spec funcional —
-> signatures, params, returns, validations, edge cases, errores. NO incluye
+> **Actualización 2026-05-13**: Pi-hole DESCARTADO del scope (decisión
+> operador: no es target del homelab a futuro). El plugin agregado
+> ahora incluye 2 sub-módulos (`cloudflare/`, `adguard/`), 11 tools
+> en total (5 cloudflare + 6 adguard).
+>
+> La sección 5 (Pi-hole) se mantiene como REFERENCIA HISTÓRICA / no-implementada
+> con banner explícito al inicio. No la borramos por si el target cambia.
+>
+> Especificación de las áreas P0 del documento `tool-gaps-reverse-proxy-plan-20260510.md`.
+> Plugin agregado en `mimir-mcp/plugins/net-tools/` con sub-módulos
+> compartiendo runtime + manifest. Nivel: spec funcional — signatures,
+> params, returns, validations, edge cases, errores. NO incluye
 > implementación.
 
 ---
@@ -369,7 +377,17 @@ NOTA: NO es DNS, es CDN. Solo si se publica algo cacheable (proxied=true) — qu
 
 ---
 
-## 5. Sección Pi-hole — 8 tools
+## 5. Sección Pi-hole — 8 tools — ❌ DESCARTADO 2026-05-13
+
+> **Operator decision 2026-05-13**: Pi-hole no es target del homelab a
+> futuro — la sección queda como REFERENCIA HISTÓRICA / NO-IMPLEMENTADA.
+> Se preserva el diseño completo por si la decisión cambia y para que
+> el patrón documentado de multi-instance + SID rotativo siga
+> disponible como precedente para otros plugins (cualquier backend
+> con auth-token rotativo).
+>
+> **No hay código en `plugins/net-tools/net_tools/pihole/`** (el directorio
+> no existe — el plugin v0.1.0 solo tiene `cloudflare/` y `adguard/`).
 
 Pi-hole API v6 usa SID rotativo (1h TTL). El `client.py` mantiene SID en memoria
 del proceso, re-loguea automáticamente si expira. No expone `login` como tool.

@@ -85,6 +85,58 @@ el comentario puede quedarse o quitarse — solo es marca de origen.
 
 ---
 
+## Incidentes operacionales comunes — entrada manual 2026-05-10
+
+### [2026-05-10] Pi-hole TS L1 lighttpd hung (admin web HTTP 000)
+- agente: manual
+- **Síntoma**: GET http://10.0.1.21/admin/ devuelve HTTP 000 (Connection timeout) tras 10+ segundos, mientras `pihole-FTL status` reporta `started` sin problemas aparentes.
+- **Causa**: pihole-FTL (Alpine LXC 101) embebe un servidor lighttpd propio. Ocasionalmente sin causa detectable, el servidor web se cuelga sin crashear el proceso FTL. El socket HTTP queda en estado CLOSE_WAIT sin dar respuesta. No es un problema de memoria ni CPU.
+- **Fix aplicado**: `pct exec 101 -- /usr/local/bin/claude-wrapper rc-service pihole-FTL restart` regenera el servidor web.
+- **Prevención**: Activar blackbox probe en Prometheus (Thanos) contra http://10.0.1.21/admin/ con auto-restart trigger via Alertmanager webhook. Incluir en observability v6.3.
+- **Cuándo aparece**: Tras updates de pihole-FTL o sostenido durante 2-4 días sin cambios aparentes. Pattern ciclado observado: falla 1 vez cada 7-10 días, se resuelve con restart.
+
+---
+
+### [2026-05-10] Caddy validate cross-bind-mount (fichero en host, no visible en /tmp del container)
+- agente: manual
+- **Síntoma**: `docker exec caddy caddy validate --config /tmp/Caddyfile` falla con "open /tmp/Caddyfile: no such file or directory" aunque el fichero existe en `/home/claude/docker/caddy/Caddyfile` en el host.
+- **Causa**: docker-compose define un bind mount file-level (`/home/claude/docker/caddy/Caddyfile:/etc/caddy/Caddyfile`). Este bind monta solo ese fichero específico, no todo el árbol `/etc/caddy/`. Cuando Caddy intenta validar desde `/tmp/`, el directorio `/tmp/` del container está vacío (no mapeado desde host).
+- **Fix aplicado**: Copiar el fichero candidato al container, validar ahí: `docker cp /tmp/Caddyfile.candidate caddy:/tmp/Caddyfile.candidate && docker exec caddy caddy validate --config /tmp/Caddyfile.candidate --adapter caddyfile`
+- **Prevención**: Este es un patrón general reutilizable para cualquier container con bind mounts file-level. Documentar en `infra/vps/docker-socket-proxy/docs/` como runbook de testing.
+- **Cuándo aparece**: Siempre que se intente usar un tool de validación que espera acceso a ficheros en directorios no mapeados (./tmp, ./var, ./root, etc).
+
+---
+
+### [2026-05-10] docker-socket-proxy read_only rompe entrypoint (haproxy.cfg template rewrite)
+- agente: manual
+- **Síntoma**: `docker-socket-proxy` (imagen `tecnativa/docker-socket-proxy:0.3.0`) entra en restart loop. Logs: "can't create /usr/local/etc/haproxy/haproxy.cfg: Read-only file system".
+- **Causa**: Imagen entrypoint ejecuta `sed` para reescribir `/usr/local/etc/haproxy/haproxy.cfg` basándose en variables de entorno (`ALLOW`, `DENY`, etc). Compose define `read_only: true` a nivel container. El mount tmpfs en `/usr/local/etc/haproxy/` no es suficiente porque el template vive en el filesystem root que está read-only.
+- **Fix aplicado**: Remover `read_only: true` de compose.yml. Sustituir con hardening alternativo: `cap_drop: ALL` + `cap_add: NET_BIND_SERVICE` + `security_opt: no-new-privileges:true`.
+- **Prevención**: No usar `read_only: true` en containers con entrypoints que reescriben ficheros. Usar compose `tmpfs` selectivo + CAP_DROP para hardening.
+- **Cuándo aparece**: Cada deploy o restart del container docker-socket-proxy tras cambio a read_only.
+
+---
+
+### [2026-05-10] Nextcloud install path es /var/www/html no /var/www/nextcloud
+- agente: manual
+- **Síntoma**: `sudo -u www-data php /var/www/nextcloud/occ status` falla "No such file or directory". El path canónico asumido por comunidad Nextcloud es `/var/www/nextcloud/`, pero en este homelab instala diferente.
+- **Causa**: Nextcloud en LXC 202 (Debian package vía apt) se instala en `/var/www/html/`, no en un subdirectorio `nextcloud/`. El path `/var/www/nextcloud/` es la convención de instalación manual vía tar.gz. apt instala directamente en la raíz del vhost.
+- **Fix aplicado**: SIEMPRE confirmar con `find /var/www -name occ -type f` antes de scriptar. Actualizar wrapper profile `nextcloud.conf` a path correcto `/var/www/html/occ`.
+- **Prevención**: Documentar path real en `docs/servicios/nextcloud-lxc-202/README.md`. Incluir en runbook "Nextcloud troubleshooting" path correcto.
+- **Cuándo aparece**: Cada vez que se intente ejecutar occ manualmente o desde scripts sin confirmar path.
+
+---
+
+### [2026-05-10] Nextcloud overwritehost rompe acceso multi-domain (redirige y queda inaccesible)
+- agente: manual
+- **Síntoma**: GET https://nextcloud.apps.casaredes.cc/ redirige automáticamente a `https://nextcloud.casaredes.cc/index.php/login`. Cliente queda inaccesible desde `apps.casaredes.cc`. Root cause: Nextcloud reescribe URLs en respuesta usando config.php `overwritehost`.
+- **Causa**: `overwritehost` en config.php está configurado a un dominio distinto del que usa el cliente. Nextcloud asume que ese es el único "dominio canónico" y reescribe todas las URLs de redirección a ese dominio. Si el cliente accede desde otro FQDN, la redirección devuelve 302 a un dominio diferente y falla.
+- **Fix aplicado**: (1) Confirmar cuál es el dominio más usado (canónico). (2) Setear `overwritehost` a ese dominio. (3) Incluir TODOS los dominios alternativos en `trusted_domains` array. (4) Confirmar `overwrite.cli.url` también apunta al dominio canónico. (5) Setear `trusted_proxies` correctamente si hay reverse proxy (Nginx).
+- **Prevención**: Documentar que `overwritehost` es singular (1 dominio). Para multi-domain, usar `trusted_domains` (array). Si cambias dominio canónico, auditar config.php completo (overwritehost, overwrite.cli.url, trusted_proxies).
+- **Cuándo aparece**: Siempre que se intente acceder a Nextcloud desde un FQDN distinto al configurado en `overwritehost`.
+
+---
+
 ## Sesión: catalog-nginx-review — 2026-05-04
 
 ### [2026-05-04] ✓ ÉXITO nginx tiene immich proxy activo (sesión: catalog-nginx-review)
@@ -169,7 +221,7 @@ el comentario puede quedarse o quitarse — solo es marca de origen.
 - agente: opencode
 - **Síntoma**: 17 sitios activos en nginx no documentados en catalog.yml
 - **Causa**: Catalog.yml no se mantenía actualizado con nuevos servicios
-- **Fix aplicado**: `ssh pve2 "sudo -n pct exec 104 -- claude-wrapper 'ls sites-available/'"` → listados 21 sitios. Añadidos 12 al catalog.yml. Excluido vuetorrent (IP legacy 192.168.1.110). dockge-media = archivo fantasma.
+- **Fix aplicado**: `ssh pve2-claude "sudo -n pct exec 104 -- claude-wrapper 'ls sites-available/'"` → listados 21 sitios. Añadidos 12 al catalog.yml. Excluido vuetorrent (IP legacy 192.168.1.110). dockge-media = archivo fantasma.
 - **Prevención**: Mantener catalog.yml como fuente de verdad — cada nuevo servicio = update catalog primero
 
 ### [2026-05-04] ✓ ÉXITO nginx tiene immich proxy activo (sesión: catalog-nginx-review)
@@ -238,7 +290,7 @@ el comentario puede quedarse o quitarse — solo es marca de origen.
 - **Síntoma**: `curl ... | jq -r ...` → `/usr/bin/bash: line 1: jq: command not found` (exit 127).
 - **Causa**: Git Bash de Windows no incluye `jq` por defecto. Solo está disponible si se instala explícitamente o si el comando se ejecuta dentro de un host Linux con jq.
 - **Fix aplicado**: Reemplazar `jq` por `python -c "import sys,json; d=json.load(sys.stdin); ..."` que sí está disponible en Windows.
-- **Prevención**: Para parsing JSON desde Git Bash en Windows, usar `python -c` o `python -m json.tool`. Solo usar `jq` cuando se ejecute en un nodo Linux remoto con jq instalado (`ssh pve "curl ... | jq ..."`).
+- **Prevención**: Para parsing JSON desde Git Bash en Windows, usar `python -c` o `python -m json.tool`. Solo usar `jq` cuando se ejecute en un nodo Linux remoto con jq instalado (`ssh pve-claude "curl ... | jq ..."`).
 
 ### [2026-05-03] regex con `|` interpretado como pipe shell por wrapper (sesión: ajustandose-a-mi-red)
 - **Síntoma**: `grep -nE "interface|listeningMode|domain|upstreams|hosts" /etc/pihole/pihole.toml` → `claude-wrapper: line 89: listeningMode: command not found` (etc).
@@ -300,9 +352,9 @@ el comentario puede quedarse o quitarse — solo es marca de origen.
 - **Prevención**: Para cualquier ACME DNS-01 con Caddy, construir imagen custom con xcaddy ANTES del primer `up`. Documentar el provider en el Dockerfile.
 
 ### [2026-05-03] sudo -n docker rechaza pero usuario en grupo docker (sesión: ajustandose-a-mi-red)
-- **Síntoma**: `ssh hetzner 'sudo -n docker exec ...'` falla con `sudo: a password is required`, aunque el comando es estándar de operación.
+- **Síntoma**: `ssh hetzner-claude 'sudo -n docker exec ...'` falla con `sudo: a password is required`, aunque el comando es estándar de operación.
 - **Causa**: `sudo -n docker exec` no está en NOPASSWD de claude (solo `docker ps/images/inspect/logs/stats/start/stop/restart` están). Pero `claude` está en el grupo `docker`, lo que permite ejecutar `docker` directamente sin sudo.
-- **Fix aplicado**: Quitar `sudo -n` del comando. `ssh hetzner 'docker exec ...'` funciona directo.
+- **Fix aplicado**: Quitar `sudo -n` del comando. `ssh hetzner-claude 'docker exec ...'` funciona directo.
 - **Prevención**: Verificar `groups` del usuario en cada nodo antes de asumir necesidad de sudo. Si está en grupo `docker`, NO usar sudo para comandos docker (más rápido y sin restricciones NOPASSWD por path).
 
 ### [2026-05-03] sudoers regeneration self-lockout cuando script viejo elimina su propia regla (sesión: ajustandose-a-mi-red)
@@ -429,6 +481,7 @@ el comentario puede quedarse o quitarse — solo es marca de origen.
 | **Iterar 5+ veces contra el síntoma sin re-validar la hipótesis base** | Tarea que debería tomar 1h se va a 4h con misma causa raíz repetida | Tras 2-3 intentos fallidos, el asistente sigue pulsando el mismo botón en lugar de parar y verificar el modelo mental | Regla 3-strikes: si tras 3 intentos un fix no avanza, parar y verificar la hipótesis base con consulta primaria (API, ssh directo, no memoria) antes de continuar |
 | **Engram backend split — IDs no resolvibles** | `mem_get_observation 9614` → "not found" pese a aparecer en system-reminder | Los IDs `SXXX` y `9XXX` del CMEM banner son de claude-mem (otro backend), no de engram (IDs ~3XX) | Para detalle de obs SXXX/9XXX: `claude-mem:mem-search` o `mcp__plugin_claude-mem_mcp-search__get_observations`. Engram tiene IDs propios (3XX) |
 | **Cat de secret en host remoto (path Windows)** | `sudo: a password is required` o `cat: No such file` | El comando `ssh host '...$(cat C:/homelab/.config/secrets/x.key)...'` ejecuta el `cat` en el host REMOTO Linux donde el path Windows no existe | Leer el secret en local primero: `PASS=$(cat /c/homelab/.config/secrets/x.key)` y pasar a ssh por stdin: `ssh host "..." <<< "$PASS"`, NO interpolar la variable en el shell remoto |
+| **Manifest `[security].allow_mutations` no activa nada** | Operador pone `allow_mutations = true` en plugin.toml, restart, y las mutating tools siguen sin aparecer | Mimir-mcp core **NO propaga** ese flag del manifest como env var (verificado con `grep -rn allow_mutations core/*.py` → 0 hits relevantes). El flag es INTENT MARKER documental, no runtime gate. Docstrings antiguos de algunos plugins (incl. nginx-ui-ops antes de 2026-05-13) afirmaban lo contrario por error | Activar mutations: (1) declarar `<PLUGIN>_ALLOW_MUTATIONS` en `[security].credential_refs` del plugin.toml, (2) `router_add_credential('<PLUGIN>_ALLOW_MUTATIONS', 'true')`, (3) restart MCP client. El env var DEBE estar declarado para que el guard del vault lo acepte; si falta, `router_add_credential` rechaza con `"No loaded plugin declares a credential pattern that matches X"`. Plugins afectados encontrados: nginx-ui-ops (fix en commit faaa02c) |
 
 ---
 
@@ -442,7 +495,7 @@ Sesión iniciada 2026-05-07 01:05 (continuación nocturna del deploy obs-v5.2 + 
 - **Causa**: Tailscale split-DNS para `casaredes.cc` apunta a `100.69.126.35` (Pi-hole VPS Hetzner). La sesión madrugada parcheó Pi-hole Logroño (LXC 101 / 10.0.1.21) y Pi-hole Munilla (100.99.189.118) — ambos resolvers que el cliente NUNCA consulta para ese dominio.
 - **Fix aplicado** (sesión 11:00): añadir record en custom.list del Pi-hole VPS:
   ```
-  ssh hetzner 'docker exec pihole sh -c "
+  ssh hetzner-claude 'docker exec pihole sh -c "
     echo \"10.0.1.2 pve.casaredes.cc\" >> /etc/pihole/custom.list
     echo \"10.0.1.180 mediastack.casaredes.cc\" >> /etc/pihole/custom.list
     pihole restartdns reload
@@ -493,8 +546,8 @@ Sesión iniciada 2026-05-07 01:05 (continuación nocturna del deploy obs-v5.2 + 
 - **Causa**: el LXC 110 fue creado anoche (mun-lxc-obs-prometheus-110) pero no se ejecutó el checklist post-create de `~/.claude/rules/homelab-scripts.md`. El wrapper `/usr/local/bin/claude-wrapper` no existe en el LXC, las reglas sudoers para el CTID nuevo tampoco.
 - **Fix pendiente** (Frente B):
   ```
-  ssh pve3 'sudo -n bash /opt/claude-scripts/sudoers-claude.sh'
-  ssh pve3 'sudo -n bash /opt/claude-scripts/deploy-wrapper.sh 110 infra'
+  ssh pve3-claude 'sudo -n bash /opt/claude-scripts/sudoers-claude.sh'
+  ssh pve3-claude 'sudo -n bash /opt/claude-scripts/deploy-wrapper.sh 110 infra'
   pct exec 110 -- /usr/local/bin/claude-wrapper echo ok
   ```
 - **Prevención**: tras CADA `pct create`, ejecución obligatoria del bloque post-create ANTES de cualquier otra acción en el LXC. El checklist está en `~/.claude/rules/homelab-scripts.md § Workflow LXC create/destroy`. La sesión madrugada lo saltó.
@@ -515,26 +568,26 @@ Sesión iniciada 2026-05-07 01:05 (continuación nocturna del deploy obs-v5.2 + 
 
 ### [2026-05-07 1200] Cat de secret en shell remoto fallando (sesión: obs-v5.2-dns-debug)
 - agente: claude-code (sesión mañana)
-- **Síntoma**: `ssh pve3 'echo $(cat C:/homelab/.config/secrets/claude-sudo.key) | sudo -S ...'` → `sudo: a password is required` (la pass nunca llega).
+- **Síntoma**: `ssh pve3-claude 'echo $(cat C:/homelab/.config/secrets/claude-sudo.key) | sudo -S ...'` → `sudo: a password is required` (la pass nunca llega).
 - **Causa**: el `$(cat ...)` se ejecuta en el host REMOTO (pve3, Linux) donde el path `C:/homelab/...` no existe. Devuelve string vacío, sudo falla.
 - **Fix correcto** (no implementado en sesión, pendiente):
   ```bash
   PASS=$(cat /c/homelab/.config/secrets/claude-sudo.key | tr -d '\n\r')
-  ssh pve3 "sudo -S ..." <<< "$PASS"
+  ssh pve3-claude "sudo -S ..." <<< "$PASS"
   ```
   o leer el secret en local y pasarlo vía `ssh ... "..."` con expansión local de la variable (NO con `$()` literal en el comando remoto).
 - **Prevención**: regla mental: "el `cat` dentro de comillas simples del SSH se ejecuta en el host remoto". Para secrets en Windows, leer ANTES en local y pasar vía stdin/heredoc/expansión local.
 
 ### [2026-05-07 1450] claude-sudo.key tiene la pass de pve solamente, NO de pve2/pve3 (sesión: obs-v5.2-dns-debug)
 - agente: claude-code (sesión mañana)
-- **Síntoma**: `ssh pve2 "echo \"$PASS\" | sudo -S whoami"` y `ssh pve3 "..."` → `Sorry, try again` con la pass leída de `/c/homelab/.config/secrets/claude-sudo.key`. La misma pass en `pve` da `user claude is not allowed to execute /usr/bin/whoami as root` (la pass LLEGÓ y sudo la aceptó, solo el comando no está whitelist).
+- **Síntoma**: `ssh pve2-claude "echo \"$PASS\" | sudo -S whoami"` y `ssh pve3-claude "..."` → `Sorry, try again` con la pass leída de `/c/homelab/.config/secrets/claude-sudo.key`. La misma pass en `pve` da `user claude is not allowed to execute /usr/bin/whoami as root` (la pass LLEGÓ y sudo la aceptó, solo el comando no está whitelist).
 - **Causa**: el archivo `claude-sudo.key` (6 chars + newline) almacena la pass de `claude` SOLO en `pve` (logroño). pve2 y pve3 tienen passwords distintas que no están guardadas en el .config/secrets local.
 - **Fix aplicado**: ninguno todavía — el operador debe proveer las passwords de pve2 y pve3 o garantizar que los comandos requeridos estén en NOPASSWD.
 - **Prevención**: ampliar el modelo del secret a archivos por nodo: `claude-sudo-pve.key`, `claude-sudo-pve2.key`, `claude-sudo-pve3.key`, o un único `claude-sudo.json` con `{"pve": "...", "pve2": "...", "pve3": "..."}`. Documentar en `~/.claude/rules/core-security.md § 3 Gestión de secretos` qué nodo cubre cada archivo.
 
 ### [2026-05-07 1452] sudoers-claude.sh / deploy-wrapper.sh NO están en NOPASSWD en pve3 (sesión: obs-v5.2-dns-debug)
 - agente: claude-code (sesión mañana)
-- **Síntoma**: `ssh pve3 'sudo -n bash /opt/claude-scripts/sudoers-claude.sh'` → `sudo: a password is required`. Idem `deploy-wrapper.sh`.
+- **Síntoma**: `ssh pve3-claude 'sudo -n bash /opt/claude-scripts/sudoers-claude.sh'` → `sudo: a password is required`. Idem `deploy-wrapper.sh`.
 - **Causa**: la whitelist sudoers de `claude` en pve3 NO incluye estos dos scripts. Sin embargo SÍ incluye `/usr/sbin/pct list` y otros comandos. Inconsistencia: los scripts que regeneran/modifican sudoers no están auto-ejecutables, lo que crea un huevo-y-gallina: para regenerar sudoers (añadir LXC 110) necesito sudo, pero sudo está restringido a la whitelist actual que no incluye al regenerador.
 - **Fix aplicado**: ninguno — bloqueante operacional. Workaround disponible: el operador ejecuta los scripts manualmente con su user admin.
 - **Prevención**: añadir a `/etc/sudoers.d/claude` en cada nodo:
@@ -827,7 +880,7 @@ Sesión post-deploy OBS-V5.2. Operador reportó "grafana muy bonico pero no hay 
 
 **Fix aplicado** (sin sudo, paths bajo home claude):
 ```bash
-ssh hetzner 'sed -i "s|\.\./\.\./grafana|../grafana|g" /home/claude/docker/observability/grafana-vps/compose.yml'
+ssh hetzner-claude 'sed -i "s|\.\./\.\./grafana|../grafana|g" /home/claude/docker/observability/grafana-vps/compose.yml'
 docker compose up -d --force-recreate obs-grafana-vps
 ```
 
@@ -893,3 +946,3574 @@ docker compose up -d --force-recreate obs-grafana-vps
    - Para cada target esperado (AdGuard, Pi-hole VPS, etc.): `up == 1`.
 
 10. **Custom dashboards sin annotations default**: regla del repo — JSON dashboards en `infra/observability/grafana/dashboards/` con `annotations.list = []`. Si se necesita annotation tipo "dashboard", se añade tras el primer save vía UI (no provisioning).
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T11:21:31.291900+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T11:24:24.307456+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T11:25:33.079100+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T11:25:48.234641+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T11:32:31.779072+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T11:34:51.477198+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T11:35:46.435126+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T11:55:16.528737+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T12:05:39.594650+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T12:17:08.760944+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T12:41:35.584857+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T12:57:07.714003+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T13:26:29.696460+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T13:30:01.349004+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T13:47:47.363618+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T13:49:40.526406+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T13:50:53.424746+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T13:52:41.606028+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T13:53:31.371527+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T13:54:25.821068+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:23:23.864598+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:26:07.767182+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:27:22.768042+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:28:06.480471+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:29:01.749681+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:29:36.817358+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:31:42.798207+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:33:16.064122+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:34:03.770733+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:35:02.855090+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:37:49.756403+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:41:12.197248+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:41:37.233158+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:42:19.611558+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:44:13.851599+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:45:52.280187+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:47:18.520909+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:48:55.104516+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:49:54.431856+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:53:02.757488+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:56:13.908384+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:57:00.835988+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:58:26.819082+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T14:58:58.621651+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:06:06.681280+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:11:11.967003+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:25:54.259239+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:27:26.661102+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:29:06.410566+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:31:04.567806+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:33:43.782165+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:34:56.610626+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:36:42.724634+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:42:16.786720+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:52:30.109942+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:53:40.414605+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:56:26.329938+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T15:59:16.184687+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:00:28.726653+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:08:09.073036+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:41:37.373317+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:45:46.134505+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:49:22.346971+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:50:39.419838+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:51:29.717193+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:51:41.652779+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:52:05.677903+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:53:36.580346+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:54:14.721149+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T16:55:14.296844+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:00:53.996045+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:04:22.705290+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:04:38.097244+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:16:38.658473+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:17:40.666446+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:21:44.034883+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:26:28.731054+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:28:47.557247+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:30:32.698917+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:34:24.435509+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:35:56.965816+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:36:44.338146+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T17:41:56.455430+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T18:53:35.208575+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:35:42.912051+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:36:12.223651+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:37:38.993613+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:39:39.334556+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:41:52.429261+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:46:51.700966+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:53:24.303740+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:55:45.942019+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T19:58:56.328561+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T20:03:41.561624+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T20:07:21.339114+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T20:08:31.197996+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T21:16:06.306127+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T21:16:40.932503+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T21:17:04.998113+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-08T21:18:16.223829+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:03:55.178107+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:11:08.227263+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:11:40.248587+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:13:21.993225+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:17:03.566209+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:17:37.842771+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:20:54.882443+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:21:12.669892+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:28:46.199518+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:30:26.398568+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:31:55.195030+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:34:36.872122+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:37:37.676756+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:37:45.563578+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:43:08.918757+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:46:53.641963+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:49:01.524652+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T08:54:58.307105+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T09:19:49.131097+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T09:32:52.257045+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T09:40:50.167217+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T09:53:04.863902+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T09:57:47.501674+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:06:21.254391+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:08:44.198809+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:14:08.312917+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:14:33.403949+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:17:38.937561+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:23:32.288390+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:24:25.881855+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:27:34.901184+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:30:13.333081+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:30:57.444798+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:33:57.800475+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:37:34.074783+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:46:16.534156+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:54:38.749019+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T10:55:54.647488+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T11:01:51.291629+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T11:13:04.724736+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T11:16:09.513973+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T11:18:52.190906+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T11:29:20.449861+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T11:45:42.470384+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T11:56:57.823860+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T12:04:27.440798+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T12:35:49.180144+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T13:58:32.889091+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T13:58:54.596599+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T14:15:10.963357+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T14:23:23.500134+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T14:24:21.016008+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T14:27:52.829007+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T14:40:57.859212+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T15:02:41.993739+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T15:12:32.985121+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T15:17:04.476214+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T15:20:11.117204+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T15:32:48.240164+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T15:44:11.853885+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:03:19.549305+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:09:46.012080+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:13:05.559055+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:15:20.436099+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:27:44.853292+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:33:58.728143+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:34:51.119209+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:37:33.109713+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:38:22.187700+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:38:58.634467+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:39:38.259726+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:40:07.548361+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:42:46.370142+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:44:13.252761+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:45:21.573794+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:46:49.822062+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T17:49:16.063527+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T18:01:36.622188+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T18:15:53.894352+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T18:20:43.739336+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T18:48:15.571866+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T19:53:37.628982+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T20:00:10.676236+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T20:04:54.534436+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T20:20:47.724702+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T20:44:59.694186+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T20:51:35.176855+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T21:45:32.082594+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T22:35:16.220061+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T23:19:12.320190+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T23:32:22.545700+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T23:33:36.540881+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T23:42:00.714117+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T23:45:20.889263+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T23:56:47.581526+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-09T23:59:01.626638+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T00:21:40.075523+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T02:12:24.418372+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T02:19:02.443970+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T02:32:27.679938+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T10:24:32.303563+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:01:30.520245+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:09:18.627105+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:12:34.553550+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:14:01.077806+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:15:37.071278+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:21:01.448990+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:23:45.880886+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:25:43.594337+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:28:01.543324+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:29:19.131204+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:30:21.083044+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:30:42.144866+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:31:23.340031+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:34:26.240795+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:37:28.175597+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:42:55.801691+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:44:28.571043+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:49:35.291674+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:51:37.771801+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:52:56.239614+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:58:30.801464+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T11:59:06.674034+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T12:00:14.794903+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T12:02:29.211286+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T12:04:28.932586+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T12:06:39.783370+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T12:48:01.172033+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T12:53:40.591974+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T12:55:29.613957+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T12:56:26.134580+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:03:19.394302+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:05:46.018348+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:10:18.217997+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:10:42.129234+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:34:12.322942+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:34:54.778796+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:35:38.453657+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:38:01.024596+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:40:12.607754+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:41:28.950386+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:43:11.902848+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:44:33.426972+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:54:59.252867+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:56:33.164940+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:57:58.752487+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T13:59:39.930751+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:05:59.473264+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:11:52.773196+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:14:33.472080+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:20:01.266739+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:26:12.386667+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:39:31.797680+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:41:18.988874+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:41:43.185877+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:43:41.825306+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:45:46.225618+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:47:03.581975+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:49:24.545602+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T14:53:34.419138+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:07:49.199379+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:10:35.833128+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:13:30.083513+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:16:00.799607+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:24:52.901954+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:27:37.076902+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:30:03.086860+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:30:55.584854+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:42:21.786355+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T15:58:37.759628+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T16:31:33.607689+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T16:35:25.314020+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T17:08:53.846357+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T17:17:51.798132+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T17:29:16.532785+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T17:32:19.233027+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T17:45:46.349494+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T17:50:52.987189+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T17:53:06.350248+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T18:01:42.811083+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T18:07:58.534403+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T18:54:00.909061+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-10T18:54:34.875842+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T08:04:08.404698+00:00 -->
+
+### [2026-05-08 1118] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=2 first_ts=2026-05-08T11:18:21.524946+00:00 args_hashes=132872364f78ef4e,132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T08:18:12.715315+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T08:29:25.690948+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T08:48:26.868513+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T10:03:58.764645+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T10:19:49.103158+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T13:23:48.912448+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T13:24:12.771610+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T13:27:39.205210+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T13:29:26.807126+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T13:29:37.102747+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T13:30:54.866465+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T13:33:07.260234+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T14:08:42.497391+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T14:35:20.012427+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T15:12:09.227556+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T15:42:38.554450+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T15:44:31.521311+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:04:18.999333+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:10:16.554343+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:12:58.182415+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:28:24.339619+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:29:24.278812+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:30:00.633099+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:31:35.594176+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:37:42.408021+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:41:01.747156+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+
+<!-- 2026-05-11 18:50 — sesión WG site-to-site MUN debugging (manual entries) -->
+
+### [2026-05-11 17:30] WireGuard OpenWrt: flow_offloading_hw + drop_invalid bloquean handshake UDP
+- agente: claude-code interactive
+- **Síntoma**: WG handshake init sale desde wg-mun (CT 251), llega al VPS, VPS responde, pero respuesta nunca llega al LXC. Conntrack OpenWrt muestra `[ASSURED]` con paquetes en reverse direction, pero LXC eth0 tcpdump no ve nada. L1 con USG funciona perfecto con misma config WG.
+- **Causa**: OpenWrt 24.10 con `flow_offloading=1` + `flow_offloading_hw=1` (ath79 Archer C7 v2) usa flowtable que dropea silenciosamente UDP non-symmetric. Combinado con `drop_invalid=1`, cualquier paquete UDP que conntrack marque como invalid se pierde sin log. La regla nft visible: `meta l4proto { tcp, udp } flow add @ft` + `ct state vmap { invalid : drop, ... }`.
+- **Fix aplicado**: `uci set firewall.@defaults[0].flow_offloading='0' / .flow_offloading_hw='0' / .drop_invalid='0'`; `uci commit firewall && service firewall restart`. Hecho en laposada Munilla 2026-05-11 17:46 con rollback automático armado vía crontab @+10min (cancelado tras éxito).
+- **Prevención**: en OpenWrt ath79 nunca habilitar `flow_offloading_hw=1` con UDP tunnels (WG, GRE, IPsec). Documentar en el playbook de bootstrap de WG endpoints.
+- **Audit raw**: ping cross-tunnel 0/10 antes → 10/10 después del cambio firewall.
+
+### [2026-05-11 17:55] WireGuard MUN: conflicto IP con cámara IP ONVIF fantasma
+- agente: claude-code interactive
+- **Síntoma**: tras fix flow_offloading, handshake OK pero ping cross-tunnel 100% loss. ARP del router muestra `192.168.2.51 → 0c:cf:89:16:97:23` (NO la MAC del LXC `bc:24:11:3a:bf:c1`). Con LXC parado, otro device seguía respondiendo ARP por .51.
+- **Causa**: cámara IP ONVIF (RTSP+HTTP en .51, OEM `0c:cf:89:*`, WiFi señal variable RTT 1-200ms) tenía IP estática manual `192.168.2.51`. Operador la daba por muerta — estaba viva. Al crear el LXC 251 con misma IP, ARP race condition → el router entregaba paquetes al device equivocado.
+- **Fix aplicado**: cambio IP LXC 251 a `192.168.2.52` vía `ip addr del/add` runtime + update OpenWrt port forward `firewall.wg_pfwd.dest_ip='192.168.2.52'`.
+- **Prevención**: pre-flight nuevo en bootstrap LXC: `ping -c 2 <IP_candidata>` ANTES de asignar. Si responde, elegir otra IP. También: documentar TODAS las IPs estáticas manuales en `docs/red/mapa_<sede>.md` para evitar olvidos como esta cámara.
+
+### [2026-05-11 18:05] `ip addr del` borra la default route asociada
+- agente: claude-code interactive
+- **Síntoma**: tras `ip addr del 192.168.2.51/24 dev eth0`, ping al gateway 192.168.2.1 OK pero `ping 8.8.8.8` devuelve `Network unreachable`. wg-quick restart imprimió `RTNETLINK answers: Network unreachable` al intentar restablecer el túnel.
+- **Causa**: cuando se borra una IP de una interfaz, el kernel Linux elimina automáticamente todas las rutas que dependían de esa IP, incluyendo la default route si su nexthop estaba en la misma subnet. La default route NO se restaura con `ip addr add` de la IP nueva.
+- **Fix aplicado**: `ip route add default via 192.168.2.1 dev eth0` tras cualquier cambio de IP en eth0.
+- **Prevención**: incluir restore explícito de default route en cualquier script/playbook que modifique IPs vía `ip addr`. O bien usar `ip addr replace` (NO está soportado para cambio de subnet — solo para misma subnet).
+
+### [2026-05-11 18:35] UniFi: static routes L3 NO disponibles vía MCP `unifi_create_traffic_route`
+- agente: claude-code interactive
+- **Síntoma**: necesidad de añadir static routes al USG-Pro-4 (10.255.0.0/24 + 192.168.2.0/24 → 10.0.1.50). `unifi_create_traffic_route` MCP solo expone `action: allow/deny/mark/shape` sin campo `next_hop` ni `interface`. Dry-run confirmó que crea solo `match_criteria` policy, no L3 route.
+- **Causa**: gap del MCP `unifi-network` — la API expuesta es policy-based routing, no kernel static routes.
+- **Fix aplicado**: API REST directa contra controlador UniFi Network Application (mini PC 10.0.1.10:11443). Endpoint `/proxy/network/api/s/default/rest/routing`. Header `x-api-key` (no Bearer). Body `{name, enabled, type: "static-route", static-route_network, static-route_nexthop, static-route_distance (string), static-route_type: "nexthop-route"}`. Procedimiento completo documentado en `C:\homelab\docs\red\wg-site-to-site.md`.
+- **Prevención**: añadir tool `unifi_create_static_route` al MCP `unifi-network` con campos `destination_network, next_hop, distance, interface` que llamen al endpoint `/rest/routing` con el body correcto. Issue tracking en `tool-gaps-reverse-proxy-plan-20260510.md`.
+- **Audit raw**: 2 rutas creadas (`_id=6a0205222852e48ae21a4d19` wg-tunnel-subnet, `_id=6a02052c2852e48ae21a4d1c` wg-munilla-lan). Smoke test ping wg-mun → 10.0.1.180: 10/10 0% loss 117ms.
+
+### [2026-05-11 18:40] Persistencia LXC config: `pct set --net0` no en sudoers whitelist
+- agente: claude-code interactive
+- **Síntoma**: cambio runtime de IP del LXC vía `ip addr del/add` no sobrevive reboot porque `/etc/pve/lxc/251.conf` mantiene `ip=192.168.2.51/24`. Comando para persistir: `pct set 251 -net0 ip=192.168.2.52/24,...` no está en `/etc/sudoers.d/claude` (solo whitelist permite --memory, --cores, --swap, --description, --onboot, --startup, --tags).
+- **Causa**: `sudoers-claude.sh` genera reglas restrictivas por diseño para los flags más comunes pero excluye --net0 (riesgo de cortar conectividad si mal usado).
+- **Fix aplicado**: ninguno aún. Requiere operador con jandro key (homelab_key, NOPASSWD ALL) ejecute UN comando: `ssh pve3 'sudo pct set 251 -net0 name=eth0,bridge=vmbr0,hwaddr=BC:24:11:3A:BF:C1,ip=192.168.2.52/24,gw=192.168.2.1,firewall=0'`. Alternativa: ampliar whitelist sudoers para `--net0` (riesgo: Claude podría romper conectividad de cualquier LXC).
+- **Prevención**: documentar en bootstrap LXC procedure que cualquier cambio de IP debe propagarse a `/etc/pve/lxc/*.conf` además de runtime, y que esa operación queda fuera del scope automatizable de Claude.
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T16:49:34.932013+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T21:03:05.443091+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-11T21:18:03.023920+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-13T09:02:58.132849+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-13T09:12:05.662373+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-13T09:23:12.164148+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-13T09:31:38.034721+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-13T09:48:51.027616+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-13T09:55:37.107721+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-13T09:57:58.148168+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
+
+<!-- auto-generated by audit-to-runtime-issues.py session=claude-code-stop on 2026-05-13T10:02:25.015808+00:00 -->
+
+### [2026-05-11 0801] router.router_install_plugin falló — execute=true requires [security].allow_plugin_install = true in router... (sesión: claude-code-stop)
+- agente: unknown
+- **Síntoma**: execute=true requires [security].allow_plugin_install = true in router.toml; current config forbids permissive installs
+- **Causa**: <pendiente — completar al revisar>
+- **Fix aplicado**: <pendiente>
+- **Prevención**: <pendiente>
+- **Audit raw**: count=1 first_ts=2026-05-11T08:01:27.578847+00:00 args_hashes=132872364f78ef4e
+
