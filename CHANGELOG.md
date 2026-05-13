@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-13 — UTF-8 fix + bootstrap validation + helpers
+
+### Added
+
+- **`core.secrets.get_github_token()`** helper compartido — patrón
+  consistente para plugins que necesitan token GitHub. Conventional
+  precedence: `GITHUB_TOKEN` env → keyring → vault → `.env`. Reusa
+  `core.secrets.get_secret` por debajo. Commit `dc0ec14`.
+- **`scripts/audit_to_runtime_issues.py --state-file`** flag —
+  ejecución idempotente para cron / Stop hook. Persiste el timestamp
+  del último error procesado en un fichero de estado; ejecuciones
+  siguientes procesan sólo entradas posteriores. Commit `6425df5`.
+- **Hook Stop CC automatic audit-bridge** patrón documentado en
+  `docs/operator-notes/audit-bridge.md`. Cada cierre de Claude Code
+  dispara el script con `--state-file`; errores de `audit.log`
+  fluyen a `runtime-issues.md` sin intervención manual. Cron PS1
+  equivalente para clientes sin hooks (OpenCode). Commit `bf809e3`.
+
+### Fixed
+
+- **`router.py` reconfigure stdout/stderr a UTF-8 on Windows** — CI
+  Windows-latest fallaba con `UnicodeEncodeError: 'charmap' codec
+  can't encode character` cuando `format_report()` imprimía los
+  `prompt` de `[[requires.credentials]]` de plugins (caracteres
+  unicode tipográficos como `→`, `—`). Reconfigure
+  `sys.stdout`/`sys.stderr` a UTF-8 con `errors='replace'` al inicio
+  del módulo. No-op en POSIX. Commit `56fbefe`. Cierra CI run
+  #25635825402.
+- **`core.bootstrap.router_add_host` valida `type`** contra
+  `_VALID_HOST_TYPES` ANTES de persistir a `hosts.yaml`. Sin esto,
+  un host con type inválido pasaba el bootstrap pero rompía el
+  siguiente boot del router (el loader rechazaba el yaml entero).
+  Repro: 2026-05-06 host con `type='ubiquiti-switch'` quedó
+  persistido sin validar y mimir falló al reiniciar. Error message
+  ahora lista los types válidos + sugiere usar `network-device` con
+  tag específico. Commit `47e0971`.
+- **`router.py` audit log error wiring** — cleanup del enrichment
+  v0.5.0: `error_message` y status type llegan correctamente al
+  audit log al cazar excepciones. Commit `60da3f1`.
+
+### Changed
+
+- **Profile `default.yaml`** habilita plugin `nginx-ui-ops` por
+  defecto. Commit `619fa0f`.
+
+### Docs
+
+- `docs/operator-notes/spec-net-tools-plugin-20260510.md` — spec
+  funcional del plugin agregado `net-tools` (Cloudflare DNS +
+  AdGuard; Pi-hole descartado del scope 2026-05-13).
+- `docs/operator-notes/tool-gaps-reverse-proxy-plan-20260510.md` —
+  audit de gaps en inventario de tools homelab vs trabajo realmente
+  necesario.
+- `docs/operator-notes/audit-bridge.md` — flujo automatizado
+  `audit.log` → `runtime-issues.md` con 3 modos (manual one-shot,
+  Stop hook CC, cron OpenCode).
+- `docs/operator-notes/runtime-issues.md` — entradas de incidentes
+  operativos 2026-05-04 a 2026-05-13 + nuevo patrón recurrente
+  documentado: "Manifest `[security].allow_mutations` no activa
+  nada" (mimir-mcp core NO propaga ese flag como env var; el path
+  real es `router_add_credential` + restart, requiere declarar el
+  ref en `credential_refs`).
+
+### Repo hygiene
+
+- Tags git retrospectivos creados para v0.2.0 (`cbf4d28`), v0.4.0
+  (`652c33e`) y v0.5.0 (`38642bc`) — releases publicados en PyPI sin
+  tag git en su momento; ahora alineados.
+- Tag huérfano `v0.3.2` (apuntaba a `247415d`, proyecto pre-Mimir
+  `homelab-fastmcp` con `native_tools/`, `server.py` legacy) eliminado
+  para limpiar el linaje. El commit permanece en git history.
+
+### Plugins (in-tree, NO son core de mimir)
+
+Para referencia del monorepo — estos cambios NO afectan al core de
+mimir pero viven en `plugins/`:
+- `plugins/unifi/` — Fase 7 cutover materializado (wrapper sobre
+  `uvx unifi-mcp-server`, modo local API key). Commit `0250aa4`.
+- `plugins/net-tools/` v0.1.0 — Cloudflare DNS (5 tools) + AdGuard
+  multi-instance (6 tools) + resolver `multi_instance.py` reusable.
+  70 tests offline (pytest-httpx mocks). Commits `4a13e91`, `3b71c4e`.
+
 ## [0.5.0] — 2026-05-06 — audit log enrichment + runtime-issues bridge
 
 ### Added

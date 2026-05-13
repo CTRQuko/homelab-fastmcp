@@ -1,6 +1,6 @@
 [project]
 name = "mimir-router-mcp"
-version = "0.5.0"
+version = "0.6.0"
 description = "Mimir — declarative MCP router with LLM-guided onboarding, scoped plugins and a layered security model."
 authors = [
   { name = "Jandro" }
