@@ -1,0 +1,55 @@
+# net-tools — DNS/firewall/network management plugin.
+#
+# Bundles 3 submodules originally identified as gaps P0 in
+# `docs/operator-notes/tool-gaps-reverse-proxy-plan-20260510.md`:
+#   - cloudflare/  : Cloudflare DNS records CRUD (zone-scoped)
+#   - pihole/      : Pi-hole REST API v6 multi-instance
+#   - adguard/     : AdGuard Home REST API multi-instance
+#
+# Multi-instance Pi-hole/AdGuard are resolved via inventory `host_ref`
+# with `tag` discriminator (see hosts.yaml schema in spec doc).
+#
+# Spec: `docs/operator-notes/spec-net-tools-plugin-20260510.md` (862L).
+
+[plugin]
+name = "net-tools"
+version = "0.1.0"
+enabled = false   # operator opts in after persisting required creds
+
+[runtime]
+entry = "server.py"
+python = ">=3.11"
+deps = ["httpx>=0.28", "pydantic>=2.5"]
+venv = "auto"
+
+[security]
+# Mutation gating: ALWAYS read-only by default. Operator flips with
+#   router_add_credential('NETTOOLS_ALLOW_MUTATIONS', 'true')
+# and restarts mimir. INTENT MARKER only — real gate is the env var.
+allow_mutations = false
+
+credential_refs = [
+  "NETTOOLS_ALLOW_MUTATIONS",
+  # Cloudflare
+  "CLOUDFLARE_TOKEN",
+  "CLOUDFLARE_ZONE_ID",
+  # Pi-hole multi-instance (PIHOLE_<INSTANCE>_PASSWORD)
+  "PIHOLE_*",
+  # AdGuard multi-instance (ADGUARD_<INSTANCE>_USER, _PASSWORD)
+  "ADGUARD_*",
+]
+
+[[requires.credentials]]
+pattern = "CLOUDFLARE_TOKEN"
+prompt = """
+Cloudflare API token con scope Zone.DNS:Edit sobre la zona objetivo.
+Generar en Cloudflare Dashboard -> My Profile -> API Tokens ->
+Create Token -> Custom token con Zone.DNS:Edit en la zona necesaria.
+"""
+
+[[requires.credentials]]
+pattern = "CLOUDFLARE_ZONE_ID"
+prompt = """
+Zone ID de la zona Cloudflare a gestionar. Panel CF -> Overview ->
+barra derecha -> Zone ID (cadena hex de 32 chars).
+"""

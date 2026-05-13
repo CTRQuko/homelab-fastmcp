@@ -75,6 +75,16 @@ plugins/*/
 # separado porque seria overkill para ~30 lineas de TOML.
 !plugins/unifi/
 
+# net-tools — plugin agregado in-tree (cloudflare + pihole + adguard
+# submodules). Tests usan mocks puros (pytest-httpx). El .venv/ y
+# pycache se excluyen via subpatron mas abajo.
+!plugins/net-tools/
+plugins/net-tools/.venv/
+plugins/net-tools/**/__pycache__/
+plugins/net-tools/**/*.egg-info/
+plugins/net-tools/.pytest_cache/
+plugins/net-tools/.ruff_cache/
+
 # Per-session Claude Code preferences — never commit
 .claude/settings.local.json
 .claude/
