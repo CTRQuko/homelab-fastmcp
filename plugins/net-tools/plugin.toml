@@ -1,15 +1,17 @@
 # net-tools — DNS/firewall/network management plugin.
 #
-# Bundles 3 submodules originally identified as gaps P0 in
-# `docs/operator-notes/tool-gaps-reverse-proxy-plan-20260510.md`:
-#   - cloudflare/  : Cloudflare DNS records CRUD (zone-scoped)
-#   - pihole/      : Pi-hole REST API v6 multi-instance
+# v0.1.0 bundles 2 submodules:
+#   - cloudflare/  : Cloudflare DNS records CRUD (single zone)
 #   - adguard/     : AdGuard Home REST API multi-instance
 #
-# Multi-instance Pi-hole/AdGuard are resolved via inventory `host_ref`
-# with `tag` discriminator (see hosts.yaml schema in spec doc).
+# Pi-hole submódulo DESCARTADO del scope (operator decision 2026-05-13
+# — Pi-hole no es target del homelab a futuro).
 #
-# Spec: `docs/operator-notes/spec-net-tools-plugin-20260510.md` (862L).
+# Multi-instance AdGuard resuelta via env vars con prefijo
+# ADGUARD_<HOST_REF>_HOST/_USER/_PASSWORD. El caller pasa
+# `host_ref="l1"` y el cliente busca las creds correspondientes.
+#
+# Spec: `docs/operator-notes/spec-net-tools-plugin-20260510.md`
 
 [plugin]
 name = "net-tools"
@@ -30,12 +32,11 @@ allow_mutations = false
 
 credential_refs = [
   "NETTOOLS_ALLOW_MUTATIONS",
+  "NETTOOLS_ALLOW_PROXIED",  # opt-in para Cloudflare proxied=true (ADR-0002)
   # Cloudflare
   "CLOUDFLARE_TOKEN",
   "CLOUDFLARE_ZONE_ID",
-  # Pi-hole multi-instance (PIHOLE_<INSTANCE>_PASSWORD)
-  "PIHOLE_*",
-  # AdGuard multi-instance (ADGUARD_<INSTANCE>_USER, _PASSWORD)
+  # AdGuard multi-instance — ADGUARD_<HOST_REF_UPPER>_HOST/_USER/_PASSWORD
   "ADGUARD_*",
 ]
 
